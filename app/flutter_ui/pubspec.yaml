@@ -1,0 +1,18 @@
+name: ryna_flutter_ui
+description: RYNA cross-platform Flutter UI connected to the local RYNA core engine.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

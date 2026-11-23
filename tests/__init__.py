@@ -1,1 +1,1 @@
-"""Automated test suite for RYNA 0.1.0."""
+"""Clean-slate RYNA automated test suite."""

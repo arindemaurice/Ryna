@@ -1,10 +1,9 @@
-# Environment files & local secrets
+# Secrets & local runtime data
 .env
 .env.local
-
-# Local RYNA runtime data & logs
 data/
 logs/
+backups/
 *.db
 *.db-shm
 *.db-wal
@@ -24,11 +23,11 @@ build/
 core/rust/target/
 
 # Flutter / Dart
-apps/desktop/.dart_tool/
-apps/desktop/build/
-apps/desktop/.flutter-plugins
-apps/desktop/.flutter-plugins-dependencies
-apps/desktop/.packages
+app/flutter_ui/.dart_tool/
+app/flutter_ui/build/
+app/flutter_ui/.flutter-plugins
+app/flutter_ui/.flutter-plugins-dependencies
+app/flutter_ui/.packages
 
 # OS & Editor
 .DS_Store
