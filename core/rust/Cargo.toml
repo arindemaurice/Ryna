@@ -1,0 +1,9 @@
+[package]
+name = "ryna-core"
+version = "0.1.0"
+edition = "2021"
+description = "RYNA core lifecycle manager, single-instance guard, local IPC supervisor, and Windows startup helper"
+
+[dependencies]
+# Intentionally zero external crates in 0.1.0 for fast, reproducible offline compilation.
+# Future phases will add platform-native system tray, audio, and accessibility bindings.

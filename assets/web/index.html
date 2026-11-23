@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RYNA 0.1.0 — Autonomous AI Assistant</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Left Navigation Rail -->
+    <aside class="nav-rail">
+      <div class="brand">
+        <div class="brand-orb" id="rail-orb"></div>
+        <div>
+          <div class="brand-name">RYNA</div>
+          <div class="brand-version" id="brand-version">v0.1.0</div>
+        </div>
+      </div>
+
+      <nav class="nav-links">
+        <button class="nav-btn active" data-view="assistant">Assistant</button>
+        <button class="nav-btn" data-view="companion">Companion</button>
+        <button class="nav-btn" data-view="tasks">Task Center</button>
+        <button class="nav-btn" data-view="memory">Memory Center</button>
+        <button class="nav-btn" data-view="settings">Settings</button>
+      </nav>
+
+      <div class="rail-footer">
+        <div class="status-pill" id="connectivity-pill">Checking...</div>
+        <div class="status-pill subtle" id="ai-provider-pill">AI: Checking...</div>
+        <button class="btn-danger full-width" id="btn-emergency-stop">Emergency Stop</button>
+      </div>
+    </aside>
+
+    <!-- Main Content Workspace -->
+    <main class="workspace">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <div class="topbar-title" id="topbar-title">Assistant</div>
+        <div class="topbar-meta">
+          <span class="chip" id="chip-companion-state">State: idle</span>
+          <span class="chip" id="chip-hardware">Hardware: detecting...</span>
+          <button class="btn-ghost" id="btn-refresh">Refresh</button>
+        </div>
+      </header>
+
+      <!-- Emergency Stop Banner -->
+      <div class="alert-banner hidden" id="emergency-banner">
+        <span><strong>EMERGENCY STOP ACTIVE</strong> — All active tasks are paused and mutating actions are blocked.</span>
+        <button class="btn-secondary" id="btn-reset-emergency">Reset Emergency Stop</button>
+      </div>
+
+      <!-- VIEW 1: MAIN ASSISTANT -->
+      <section class="view active" id="view-assistant">
+        <div class="assistant-layout">
+          <div class="conv-sidebar">
+            <div class="panel-header">
+              <span>Conversations</span>
+              <button class="btn-primary small" id="btn-new-conv">+ New</button>
+            </div>
+            <div class="conv-list" id="conv-list"></div>
+          </div>
+
+          <div class="chat-panel">
+            <div class="ai-status-banner hidden" id="ai-unavailable-banner">
+              <strong>AI Provider Unavailable:</strong>
+              <span id="ai-unavailable-reason">No local or cloud AI model is currently reachable.</span>
+              <span class="hint">Configure Ollama or Cloud AI in Settings, or use offline local tools: <code>/calc 12*8</code>, <code>/diag</code>, <code>/find README</code>, <code>/note ...</code>.</span>
+            </div>
+
+            <div class="chat-messages" id="chat-messages"></div>
+
+            <div class="chat-composer">
+              <div class="composer-tools">
+                <button class="chip-btn" data-insert="/diag ">/diag</button>
+                <button class="chip-btn" data-insert="/calc ">/calc</button>
+                <button class="chip-btn" data-insert="/find ">/find</button>
+                <button class="chip-btn" data-insert="/note ">/note</button>
+                <div class="spacer"></div>
+                <button class="btn-warn small" id="btn-interrupt" title="Interrupt active response or speech">Interrupt</button>
+              </div>
+              <form id="chat-form" class="composer-row">
+                <textarea id="chat-input" rows="2" placeholder="Message RYNA (or run local tools like /diag, /calc 42*7)..."></textarea>
+                <button type="submit" class="btn-primary" id="btn-send">Send</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: DESKTOP COMPANION -->
+      <section class="view" id="view-companion">
+        <div class="companion-grid">
+          <div class="card companion-stage">
+            <canvas id="companion-canvas" width="320" height="320"></canvas>
+            <div class="companion-caption" id="companion-caption">RYNA • IDLE</div>
+            <div class="state-buttons" id="companion-state-buttons"></div>
+          </div>
+          <div class="card">
+            <h3>Companion Controls</h3>
+            <p class="muted">Changes persist directly to SQLite and sync with the native Windows companion window when launched via <code>scripts/run.ps1 -Companion</code>.</p>
+            <div class="form-group">
+              <label>Companion Size (px): <span id="val-comp-size">170</span></label>
+              <input type="range" id="ctrl-comp-size" min="120" max="260" step="10" value="170" />
+            </div>
+            <div class="form-group">
+              <label>Transparency: <span id="val-comp-alpha">0.94</span></label>
+              <input type="range" id="ctrl-comp-alpha" min="0.5" max="1.0" step="0.02" value="0.94" />
+            </div>
+            <label class="toggle-row">
+              <input type="checkbox" id="ctrl-comp-topmost" />
+              <span>Always on top (native companion)</span>
+            </label>
+            <label class="toggle-row">
+              <input type="checkbox" id="ctrl-reduced-anim" />
+              <span>Reduced animations (low-resource mode)</span>
+            </label>
+            <div class="btn-row">
+              <button class="btn-primary" id="btn-save-companion">Save Companion Settings</button>
+              <button class="btn-warn" id="btn-companion-interrupt">Trigger Barge-In / Interrupt</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 3: TASK CENTER -->
+      <section class="view" id="view-tasks">
+        <div class="two-col">
+          <div class="card">
+            <h3>Create Persistent Task</h3>
+            <form id="task-form">
+              <div class="form-group">
+                <label for="task-title">Title</label>
+                <input id="task-title" type="text" placeholder="e.g., System Diagnostics Check" required />
+              </div>
+              <div class="form-group">
+                <label for="task-goal">Goal (supports local tools: <code>calc: ...</code>, <code>find files ...</code>, <code>note: ...</code>, <code>system diagnostics</code>)</label>
+                <textarea id="task-goal" rows="3" placeholder="Describe the task goal..." required></textarea>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="task-perm">Permission Level</label>
+                  <select id="task-perm">
+                    <option value="1">Level 1 — Automatic</option>
+                    <option value="2">Level 2 — Confirmation Required</option>
+                    <option value="3">Level 3 — Restricted</option>
+                  </select>
+                </div>
+                <label class="toggle-row" style="margin-top:22px;">
+                  <input type="checkbox" id="task-internet" />
+                  <span>Requires Internet</span>
+                </label>
+              </div>
+              <div class="btn-row">
+                <button type="submit" class="btn-primary">Create Task</button>
+                <button type="button" class="btn-secondary" id="btn-create-run-task">Create & Run</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="panel-header">
+              <h3>Tasks & Approvals</h3>
+              <select id="task-filter">
+                <option value="">All States</option>
+                <option value="pending">Pending</option>
+                <option value="running">Running</option>
+                <option value="waiting_for_approval">Waiting for Approval</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div id="task-list" class="item-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 4: MEMORY CENTER -->
+      <section class="view" id="view-memory">
+        <div class="two-col">
+          <div class="card">
+            <h3>Store Persistent Memory</h3>
+            <p class="muted">Secrets (passwords, API keys, private keys) are automatically rejected from ordinary memory.</p>
+            <form id="memory-form">
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="mem-category">Category</label>
+                  <select id="mem-category">
+                    <option value="personal">Personal</option>
+                    <option value="project">Project</option>
+                    <option value="knowledge">Knowledge</option>
+                    <option value="activity">Activity</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="mem-type">Classification</label>
+                  <select id="mem-type">
+                    <option value="confirmed_fact">Confirmed Fact</option>
+                    <option value="user_preference">User Preference</option>
+                    <option value="inference">Inference</option>
+                    <option value="temporary">Temporary (7d)</option>
+                    <option value="outdated">Outdated</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="mem-content">Content</label>
+                <textarea id="mem-content" rows="3" placeholder="e.g., User prefers concise bullet-point technical summaries" required></textarea>
+              </div>
+              <div class="form-group">
+                <label for="mem-tags">Tags (comma-separated)</label>
+                <input id="mem-tags" type="text" placeholder="communication, style" />
+              </div>
+              <div id="mem-form-error" class="inline-error hidden"></div>
+              <button type="submit" class="btn-primary">Save Memory</button>
+            </form>
+
+            <hr class="divider" />
+            <h4>Memory Controls</h4>
+            <label class="toggle-row">
+              <input type="checkbox" id="mem-ctrl-enabled" />
+              <span>Memory System Enabled</span>
+            </label>
+            <label class="toggle-row">
+              <input type="checkbox" id="mem-ctrl-paused" />
+              <span>Pause Automatic Learning</span>
+            </label>
+            <div class="btn-row">
+              <button class="btn-secondary" id="btn-export-mem">Export JSON</button>
+              <button class="btn-danger" id="btn-clear-mem">Clear All Memory</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="panel-header">
+              <h3>Stored Memories</h3>
+              <div class="filter-bar">
+                <select id="mem-filter-cat">
+                  <option value="">All Categories</option>
+                  <option value="personal">Personal</option>
+                  <option value="project">Project</option>
+                  <option value="knowledge">Knowledge</option>
+                  <option value="activity">Activity</option>
+                </select>
+                <input id="mem-search" type="search" placeholder="Search memories..." />
+              </div>
+            </div>
+            <div id="memory-list" class="item-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 5: SETTINGS (ALL 16 CATEGORIES) -->
+      <section class="view" id="view-settings">
+        <div class="settings-layout">
+          <div class="settings-nav" id="settings-nav"></div>
+          <div class="card settings-body" id="settings-body"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
