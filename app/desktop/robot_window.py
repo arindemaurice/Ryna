@@ -1,19 +1,27 @@
 """RYNA Pure Voice-Controlled Walking Desktop Robot (Windows Native).
 
 NO dropdown menus on RYNA. NO website. NO bloated chat app.
-1. Click RYNA -> she stops walking, calmly says:
+Features:
+1. Genuine interchanging walking legs (4-phase alternating stride cycle facing right & left).
+2. Thinking pose: stops walking, stands upright, looks STRAIGHT forward, and touches her head.
+3. Autonomous time-of-day behavior:
+   - Night (22:00-05:59): sleeps peacefully with gentle breathing & floating cyan Zzz
+   - Morning (06:00-11:59): energetic walking patrols with brief curious stands
+   - Afternoon (12:00-17:59): balanced mix of walking, sitting, and standing
+   - Evening (18:00-21:59): relaxed sitting with gentle strolls and short naps
+4. Click RYNA -> wakes/stops, calmly says:
    "I'm here. What would you like me to help you with?"
-   and automatically listens to your microphone.
-2. Clean floating text box right above RYNA shows what you dictate in real time.
-3. When you finish speaking, she responds plainly in a calm spoken voice.
-4. Configure RYNA purely by speech ("stop walking", "start walking", "speak slower",
-   "speak faster", "be smaller", "be bigger", "keep listening", "use cloud",
-   "stay offline", "use fast model", "goodbye Ryna").
-5. Click RYNA while she is speaking for instant barge-in interruption.
+   and automatically opens the microphone.
+5. Clear floating text box right above RYNA shows a live audio meter + your exact dictated words
+   while you speak, while she thinks (touching her head), and while she responds calmly.
+6. 100% voice-controlled settings & poses ("sit down", "stand up", "go to sleep", "wake up",
+   "walk around", "stop walking", "speak slower", "speak faster", "be bigger", "be smaller",
+   "keep listening", "use cloud", "stay offline", "goodbye ryna").
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 import math
 import random
 import re
@@ -28,6 +36,7 @@ from ai.orchestration.core import RynaCore
 
 TRANSPARENT_KEY = "#010203"
 BG_BUBBLE = "#07101f"
+BG_DICTATION = "#0c203d"
 CYAN = "#22d3ee"
 CYAN_SOFT = "#38bdf8"
 TEXT_MAIN = "#eef5ff"
@@ -43,7 +52,7 @@ STATE_COLORS: dict[str, str] = {
     "happy": "#34d399",
     "confused": "#a78bfa",
     "concerned": "#fbbf24",
-    "sleeping": "#64748b",
+    "sleeping": "#60a5fa",
     "interrupted": "#fb923c",
     "error": "#f87171",
 }
@@ -52,8 +61,48 @@ SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 GREETING_PROMPT = "I'm here. What would you like me to help you with?"
 
 
+def time_of_day_weights(hour: int) -> tuple[str, list[tuple[str, float]]]:
+    """Return (period_label, weighted idle actions) based on local hour (0-23)."""
+    h = int(hour) % 24
+    if h >= 22 or h < 6:
+        return "NIGHT", [("sleep", 0.85), ("sit", 0.15)]
+    if 6 <= h < 12:
+        return "MORNING", [("walk", 0.62), ("stand", 0.25), ("sit", 0.13)]
+    if 12 <= h < 18:
+        return "AFTERNOON", [("walk", 0.44), ("sit", 0.36), ("stand", 0.20)]
+    return "EVENING", [("sit", 0.48), ("walk", 0.24), ("sleep", 0.16), ("stand", 0.12)]
+
+
+def choose_timed_action(hour: int, walk_enabled: bool = True, rng: random.Random | None = None) -> tuple[str, float]:
+    """Pick the next autonomous action ('walk' | 'stand' | 'sit' | 'sleep') and duration (seconds)."""
+    r = rng or random
+    _label, weights = time_of_day_weights(hour)
+    filtered = [(act, w) for act, w in weights if walk_enabled or act != "walk"]
+    if not filtered:
+        filtered = [("stand", 1.0)]
+    total = sum(w for _, w in filtered)
+    pick = r.random() * total
+    acc = 0.0
+    chosen = filtered[0][0]
+    for act, w in filtered:
+        acc += w
+        if pick <= acc:
+            chosen = act
+            break
+
+    if chosen == "sleep":
+        return "sleep", r.uniform(22.0, 45.0)
+    if chosen == "sit":
+        return "sit", r.uniform(9.0, 18.0)
+    if chosen == "walk":
+        return "walk", r.uniform(5.0, 10.0)
+    return "stand", r.uniform(3.5, 6.5)
+
+
 class RynaRobotDesktop:
-    """Pure voice-controlled walking desktop robot with live dictation box above her."""
+    """Pure voice-controlled walking desktop robot with interchanging legs, thinking/sit/sleep poses,
+    time-of-day autonomous routine, and live dictation box above her.
+    """
 
     def __init__(self, core: RynaCore) -> None:
         self.core = core
@@ -62,7 +111,7 @@ class RynaRobotDesktop:
         self.head_png = self.assets_dir / "ryna_head.png"
 
         s = core.db.get_all_settings()
-        self.robot_size = max(120, min(260, int(s.get("desktop.robot_size", 170))))
+        self.robot_size = max(120, min(260, int(s.get("desktop.robot_size", 176))))
         self.alpha = float(s.get("desktop.robot_transparency", 0.98))
         self.always_on_top = bool(s.get("desktop.robot_always_on_top", True))
         self.walk_enabled = bool(s.get("desktop.robot_walk_enabled", True))
@@ -74,14 +123,22 @@ class RynaRobotDesktop:
         self.step_phase = 0.0
         self.mic_level = 0.0
         self.facing = 1
-        self.walk_speed = 2.4
-        self.patrol_mode = "walk"
-        self.patrol_until = time.monotonic() + random.uniform(4.0, 8.0)
+        self.walk_speed = 2.5
+
+        # Autonomous time-of-day action state ('walk' | 'stand' | 'sit' | 'sleep')
+        self.manual_pose: str | None = None  # Set when user says "sit down", "go to sleep", "stand up", etc.
+        init_act, init_dur = choose_timed_action(datetime.now().hour, walk_enabled=self.walk_enabled)
+        self.current_action = init_act
+        self.action_until = time.monotonic() + init_dur
+        if self.current_action == "sleep":
+            self.core.voice.set_state("sleeping")
 
         self.is_listening = False
         self.is_generating = False
+        self.is_greeting = False
         self.active_conv_id: str | None = None
-        self._bubble_hide_at = time.monotonic() + 6.0
+        self._last_dictation = ""
+        self._bubble_hide_at = time.monotonic() + 7.0
         self._tray_icon: Any = None
         self._drag_x = 0
         self._drag_y = 0
@@ -109,8 +166,8 @@ class RynaRobotDesktop:
         if not (0 <= self.pos_y <= self.sh - self.robot_size - 48):
             self.pos_y = float(self.sh - self.robot_size - 72)
 
-        self.win_w = self.robot_size + 44
-        self.win_h = self.robot_size + 26
+        self.win_w = self.robot_size + 48
+        self.win_h = self.robot_size + 32
         self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.pos_x)}+{int(self.pos_y)}")
 
         self.canvas = tk.Canvas(
@@ -123,9 +180,13 @@ class RynaRobotDesktop:
         )
         self.canvas.pack(fill="both", expand=True)
 
-        self._frames_right: list[ImageTk.PhotoImage] = []
-        self._frames_left: list[ImageTk.PhotoImage] = []
-        self._load_stride_frames()
+        self._walk_right: list[ImageTk.PhotoImage] = []
+        self._walk_left: list[ImageTk.PhotoImage] = []
+        self._pose_stand: ImageTk.PhotoImage | None = None
+        self._pose_think: ImageTk.PhotoImage | None = None
+        self._pose_sit: ImageTk.PhotoImage | None = None
+        self._pose_sleep: ImageTk.PhotoImage | None = None
+        self._load_pose_sprites()
         self._bind_events()
 
         # --- 2. Clean Floating Dictation & Response Box Directly Above RYNA ---
@@ -133,7 +194,7 @@ class RynaRobotDesktop:
         self.bubble.overrideredirect(True)
         self.bubble.configure(bg=CYAN)
         self.bubble.attributes("-topmost", True)
-        self.bubble.attributes("-alpha", 0.94)
+        self.bubble.attributes("-alpha", 0.95)
         self._bubble_frame = tk.Frame(self.bubble, bg=BG_BUBBLE, padx=12, pady=8)
         self._bubble_frame.pack(fill="both", expand=True, padx=1, pady=1)
 
@@ -142,55 +203,107 @@ class RynaRobotDesktop:
         self._wave_lbl = tk.Label(top, text="●", fg=CYAN, bg=BG_BUBBLE, font=("Segoe UI", 9, "bold"))
         self._wave_lbl.pack(side="left", padx=(0, 5))
         tk.Label(top, text="RYNA", fg=TEXT_MAIN, bg=BG_BUBBLE, font=("Segoe UI", 9, "bold")).pack(side="left")
-        self._state_lbl = tk.Label(top, text="READY", fg=CYAN_SOFT, bg=BG_BUBBLE, font=("Segoe UI", 8))
+        self._state_lbl = tk.Label(top, text="READY", fg=CYAN_SOFT, bg=BG_BUBBLE, font=("Segoe UI", 8, "bold"))
         self._state_lbl.pack(side="right")
 
-        # Live dictated text row (shows clearly what the user is dictating!)
+        # Dedicated Dictation Box (ALWAYS shows clearly what you are speaking / spoke!)
+        self._dict_container = tk.Frame(self._bubble_frame, bg=BG_DICTATION, highlightbackground="#1e4976", highlightthickness=1, padx=7, pady=5)
+        self._dict_header = tk.Label(
+            self._dict_container,
+            text="YOU SPOKE",
+            fg="#38bdf8",
+            bg=BG_DICTATION,
+            anchor="w",
+            font=("Segoe UI", 7, "bold"),
+        )
+        self._dict_header.pack(fill="x")
         self._dictation_var = tk.StringVar(value="")
         self._dictation_lbl = tk.Label(
-            self._bubble_frame,
+            self._dict_container,
             textvariable=self._dictation_var,
-            fg="#7dd3fc",
-            bg="#0b1a30",
-            wraplength=260,
+            fg="#e0f2fe",
+            bg=BG_DICTATION,
+            wraplength=265,
             justify="left",
-            padx=6,
-            pady=4,
+            anchor="w",
             font=("Segoe UI", 9),
         )
+        self._dictation_lbl.pack(fill="x", pady=(1, 2))
+        self._mic_bar = tk.Canvas(self._dict_container, width=250, height=5, bg="#071324", highlightthickness=0)
 
         # RYNA's calm response text
-        self._reply_var = tk.StringVar(value=GREETING_PROMPT)
+        self._reply_var = tk.StringVar(value=self._initial_greeting())
         self._reply_lbl = tk.Label(
             self._bubble_frame,
             textvariable=self._reply_var,
             fg="#e2e8f0",
             bg=BG_BUBBLE,
-            wraplength=260,
+            wraplength=275,
             justify="left",
+            anchor="w",
             font=("Segoe UI", 9),
         )
-        self._reply_lbl.pack(fill="x", pady=(4, 0))
+        self._reply_lbl.pack(fill="x", pady=(5, 0))
 
-        self.bubble.bind("<Button-1>", lambda _e: self._on_click_ryna())
+        # Clicking anywhere on the bubble also triggers the same click behavior as clicking RYNA
+        for w in (self.bubble, self._bubble_frame, self._dict_container, self._dictation_lbl, self._reply_lbl):
+            w.bind("<Button-1>", lambda _e: self._on_click_ryna())
         self._position_bubble()
 
-        # --- 3. Minimal Tray Icon (only for Show/Hide/Exit — settings are voice-controlled) ---
+        # --- 3. Minimal Tray Icon (only Show / Exit — all settings are voice-controlled) ---
         self._start_tray()
         self.core.warm_up_async()
         self._tick()
 
-    def _load_stride_frames(self) -> None:
-        self._frames_right.clear()
-        self._frames_left.clear()
-        if not self.robot_png.is_file():
-            return
-        base = Image.open(self.robot_png).convert("RGBA")
-        base.thumbnail((self.robot_size - 14, self.robot_size - 14), Image.Resampling.LANCZOS)
-        flipped = base.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-        for deg in (-4.5, -2.0, 0.5, 3.0, 1.0, -1.5):
-            self._frames_right.append(ImageTk.PhotoImage(base.rotate(deg, resample=Image.Resampling.BICUBIC, expand=True)))
-            self._frames_left.append(ImageTk.PhotoImage(flipped.rotate(-deg, resample=Image.Resampling.BICUBIC, expand=True)))
+    def _initial_greeting(self) -> str:
+        period, _ = time_of_day_weights(datetime.now().hour)
+        if period == "NIGHT":
+            return "Resting for the night. Click me anytime you need help."
+        return "Click me whenever you want to talk."
+
+    def _load_single_sprite(self, filename: str) -> Image.Image | None:
+        path = self.assets_dir / filename
+        if not path.is_file():
+            return None
+        with Image.open(path) as raw:
+            img = raw.convert("RGBA")
+        max_dim = self.robot_size - 10
+        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        return img
+
+    def _load_pose_sprites(self) -> None:
+        """Load RYNA's interchanging walk cycle + stand, think (touching head), sit, and sleep poses."""
+        self._walk_right.clear()
+        self._walk_left.clear()
+
+        # 4-phase genuine interchanging stride cycle: [walk_a, walk_mid, walk_b, walk_mid]
+        walk_a = self._load_single_sprite("ryna_walk_a.png") or self._load_single_sprite("ryna_robot.png")
+        walk_mid = self._load_single_sprite("ryna_walk_mid.png") or walk_a
+        walk_b = self._load_single_sprite("ryna_walk_b.png") or walk_a
+
+        if walk_a is not None:
+            cycle_imgs = [
+                (walk_a, -1.8),
+                (walk_mid, 0.0),
+                (walk_b, 1.8),
+                (walk_mid, 0.0),
+            ]
+            for img, deg in cycle_imgs:
+                assert img is not None
+                r_img = img.rotate(deg, resample=Image.Resampling.BICUBIC, expand=True)
+                l_img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT).rotate(-deg, resample=Image.Resampling.BICUBIC, expand=True)
+                self._walk_right.append(ImageTk.PhotoImage(r_img))
+                self._walk_left.append(ImageTk.PhotoImage(l_img))
+
+        stand = self._load_single_sprite("ryna_stand.png") or walk_a
+        think = self._load_single_sprite("ryna_think.png") or stand
+        sit = self._load_single_sprite("ryna_sit.png") or stand
+        sleep = self._load_single_sprite("ryna_sleep.png") or sit
+
+        self._pose_stand = ImageTk.PhotoImage(stand) if stand is not None else None
+        self._pose_think = ImageTk.PhotoImage(think) if think is not None else None
+        self._pose_sit = ImageTk.PhotoImage(sit) if sit is not None else None
+        self._pose_sleep = ImageTk.PhotoImage(sleep) if sleep is not None else None
 
     def _bind_events(self) -> None:
         # Left click = greet & listen (or barge-in interrupt); drag = move RYNA. NO dropdown menus!
@@ -227,9 +340,8 @@ class RynaRobotDesktop:
     def _position_bubble(self) -> None:
         try:
             self.bubble.update_idletasks()
-            bw = max(250, self.bubble.winfo_reqwidth())
-            bh = max(62, self.bubble.winfo_reqheight())
-            # Center cleanly right above RYNA's head
+            bw = max(270, self.bubble.winfo_reqwidth())
+            bh = max(68, self.bubble.winfo_reqheight())
             bx = int(self.pos_x + (self.win_w - bw) / 2)
             bx = max(12, min(self.sw - bw - 12, bx))
             by = int(self.pos_y - bh - 10)
@@ -239,20 +351,37 @@ class RynaRobotDesktop:
         except Exception:
             pass
 
-    def _show_bubble(self, reply_text: str, dictation_text: str | None = None, duration: float = 10.0) -> None:
+    def _show_bubble(
+        self,
+        reply_text: str,
+        dictation_text: str | None = None,
+        show_mic_bar: bool = False,
+        duration: float = 12.0,
+    ) -> None:
         if dictation_text is not None:
-            if dictation_text.strip():
-                self._dictation_var.set(f"You: {dictation_text.strip()}")
-                if not self._dictation_lbl.winfo_ismapped():
-                    self._dictation_lbl.pack(fill="x", pady=(5, 2), before=self._reply_lbl)
+            self._last_dictation = dictation_text.strip()
+            if self._last_dictation or show_mic_bar:
+                header = "LISTENING — SPEAK NOW" if show_mic_bar else "YOU SPOKE"
+                self._dict_header.config(text=header, fg="#38bdf8" if show_mic_bar else "#7dd3fc")
+                self._dictation_var.set(self._last_dictation if self._last_dictation else "Listening for your voice…")
+                if not self._dict_container.winfo_ismapped():
+                    self._dict_container.pack(fill="x", pady=(6, 2), before=self._reply_lbl)
+                if show_mic_bar:
+                    if not self._mic_bar.winfo_ismapped():
+                        self._mic_bar.pack(fill="x", pady=(3, 1))
+                else:
+                    if self._mic_bar.winfo_ismapped():
+                        self._mic_bar.pack_forget()
             else:
                 self._dictation_var.set("")
-                if self._dictation_lbl.winfo_ismapped():
-                    self._dictation_lbl.pack_forget()
+                if self._mic_bar.winfo_ismapped():
+                    self._mic_bar.pack_forget()
+                if self._dict_container.winfo_ismapped():
+                    self._dict_container.pack_forget()
 
         clean = reply_text.strip()
-        if len(clean) > 220:
-            clean = clean[:217] + "…"
+        if len(clean) > 240:
+            clean = clean[:237] + "…"
         self._reply_var.set(clean)
         self._bubble_hide_at = time.monotonic() + duration
         try:
@@ -261,41 +390,60 @@ class RynaRobotDesktop:
         except Exception:
             pass
 
-    # --- Exact Click-to-Greet -> Dictate -> Calm Plain Response Flow ---
+    # --- Exact Click-to-Greet -> Dictate -> Think (Touch Head) -> Calm Plain Response Flow ---
     def _on_click_ryna(self) -> None:
-        # If she is currently speaking or generating -> instant barge-in and start listening right away!
-        if self.core.voice.get_state() == "speaking" or self.is_generating:
+        # Wake RYNA up if she was sleeping
+        if self.current_action == "sleep" or self.state == "sleeping":
+            self.current_action = "stand"
+            if self.manual_pose == "sleep":
+                self.manual_pose = None
+            self.core.voice.set_state("idle")
+
+        # If speaking or thinking -> instant barge-in and start listening right away!
+        if self.core.voice.get_state() == "speaking" or self.is_generating or self.is_greeting:
+            self.is_greeting = False
             self.interrupt_now()
             self._start_listening_now()
             return
 
-        # If she is already listening -> finish recording immediately and process what was dictated
+        # If already listening -> finish recording immediately and transcribe what was spoken
         if self.is_listening:
             self.core.voice.recognizer.stop_recording()
             return
 
-        # Fresh click -> greet calmly, then automatically open microphone to listen!
-        self._show_bubble(GREETING_PROMPT, dictation_text="", duration=20.0)
+        # Fresh click -> stand straight, greet calmly, then automatically listen!
+        self.is_greeting = True
+        self._show_bubble(GREETING_PROMPT, dictation_text="", show_mic_bar=False, duration=25.0)
+
+        def _after_greeting() -> None:
+            self.is_greeting = False
+            if self.running and not self.core.voice.is_interrupted():
+                self.root.after(100, self._start_listening_now)
+
         try:
-            self.core.voice.speak_native(
-                GREETING_PROMPT,
-                on_finished=lambda: self.root.after(120, self._start_listening_now) if self.running and not self.core.voice.is_interrupted() else None,
-            )
+            self.core.voice.speak_native(GREETING_PROMPT, on_finished=_after_greeting)
         except Exception:
+            self.is_greeting = False
             self._start_listening_now()
 
     def _start_listening_now(self) -> None:
         if self.is_listening or not self.running:
             return
         self.is_listening = True
-        self._show_bubble("Listening…", dictation_text="…", duration=20.0)
+        self._show_bubble("Speak whenever you're ready.", dictation_text="", show_mic_bar=True, duration=25.0)
 
         def _worker() -> None:
             try:
                 transcript = self.core.voice.listen_native(
                     on_level=lambda lvl: setattr(self, "mic_level", lvl),
                     on_partial=lambda partial: self.root.after(
-                        0, lambda p=partial: self._show_bubble("Listening…", dictation_text=p, duration=20.0)
+                        0,
+                        lambda p=partial: self._show_bubble(
+                            "Listening…",
+                            dictation_text=p,
+                            show_mic_bar=True,
+                            duration=25.0,
+                        ),
                     ),
                 )
                 self.is_listening = False
@@ -304,25 +452,67 @@ class RynaRobotDesktop:
                     self.core.record_activity("voice", "voice_transcript", f'Dictated: "{transcript[:100]}"', "ok")
                     self.root.after(0, lambda t=transcript: self._handle_dictated_speech(t))
                 else:
-                    self.root.after(0, lambda: self._show_bubble("I didn't hear anything. Click me whenever you're ready.", dictation_text="", duration=4.5))
+                    self.root.after(
+                        0,
+                        lambda: self._show_bubble(
+                            "I didn't hear anything. Click me whenever you're ready.",
+                            dictation_text="",
+                            show_mic_bar=False,
+                            duration=5.0,
+                        ),
+                    )
             except Exception as exc:
                 self.is_listening = False
                 self.mic_level = 0.0
-                self.root.after(0, lambda e=str(exc): self._show_bubble(f"Microphone error: {e}", dictation_text="", duration=6.0))
+                self.root.after(
+                    0,
+                    lambda e=str(exc): self._show_bubble(f"Microphone error: {e}", dictation_text="", show_mic_bar=False, duration=7.0),
+                )
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    # --- 100% Voice-Controlled Settings ---
+    # --- 100% Voice-Controlled Settings & Poses ---
     def _try_voice_setting(self, text: str) -> str | None:
         low = text.strip().lower().rstrip(".!?")
 
+        # Pose & activity commands
+        if any(p in low for p in ("sit down", "take a seat", "have a seat", "sit here", "please sit")):
+            self.manual_pose = "sit"
+            self.current_action = "sit"
+            self.core.voice.set_state("idle")
+            return "Okay, I'll sit right here."
+
+        if any(p in low for p in ("stand up", "stand straight", "stop sitting")):
+            self.manual_pose = "stand"
+            self.current_action = "stand"
+            self.core.voice.set_state("idle")
+            return "Standing up and ready."
+
+        if any(p in low for p in ("go to sleep", "take a nap", "sleep now", "time for bed", "good night")):
+            self.manual_pose = "sleep"
+            self.current_action = "sleep"
+            return "Good night. I'll sleep right here until you click me."
+
+        if any(p in low for p in ("wake up", "get up", "resume schedule", "auto mode", "be natural")):
+            self.manual_pose = None
+            act, dur = choose_timed_action(datetime.now().hour, walk_enabled=self.walk_enabled)
+            self.current_action = "stand" if act == "sleep" else act
+            self.action_until = time.monotonic() + dur
+            self.core.voice.set_state("idle")
+            return "I'm awake and ready to help."
+
         if any(p in low for p in ("stop walking", "stay still", "stay here", "don't walk", "stand still")):
             self.walk_enabled = False
+            self.manual_pose = "stand"
+            self.current_action = "stand"
             self.core.db.set_setting("desktop.robot_walk_enabled", False)
             return "Okay, I'll stay right here."
 
         if any(p in low for p in ("start walking", "walk around", "keep walking", "you can walk")):
             self.walk_enabled = True
+            self.manual_pose = None
+            self.current_action = "walk"
+            self.action_until = time.monotonic() + random.uniform(6.0, 11.0)
             self.core.db.set_setting("desktop.robot_walk_enabled", True)
             return "Sure, I'll walk around your desktop."
 
@@ -378,9 +568,9 @@ class RynaRobotDesktop:
             self.core.warm_up_async()
             return "Switched to the stronger local model."
 
-        if any(p in low for p in ("go to sleep", "hide yourself")):
+        if any(p in low for p in ("hide yourself", "go to tray")):
             self.root.after(2200, self.hide_to_tray)
-            return "Okay, I'll rest in the system tray until you need me."
+            return "Okay, I'll wait in the system tray until you need me."
 
         if any(p in low for p in ("shut down ryna", "goodbye ryna", "exit ryna", "close ryna")):
             self.root.after(2400, self.quit_app)
@@ -390,26 +580,30 @@ class RynaRobotDesktop:
 
     def _resize(self, px: int) -> None:
         self.robot_size = px
-        self.win_w = px + 44
-        self.win_h = px + 26
+        self.win_w = px + 48
+        self.win_h = px + 32
         self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.pos_x)}+{int(self.pos_y)}")
         self.canvas.config(width=self.win_w, height=self.win_h)
-        self._load_stride_frames()
+        self._load_pose_sprites()
         self._position_bubble()
         self.core.db.set_setting("desktop.robot_size", px)
 
     def _handle_dictated_speech(self, text: str) -> None:
-        """Show exact dictated text above RYNA, execute voice setting/action/AI, and reply plainly & calmly."""
-        self._show_bubble("Thinking…", dictation_text=text, duration=20.0)
+        """Keep exact dictated text visible above RYNA, enter thinking pose (touching head), and reply plainly & calmly."""
+        self.core.voice.set_state("thinking")
+        self._show_bubble("Thinking…", dictation_text=text, show_mic_bar=False, duration=25.0)
 
         def _after_spoken() -> None:
+            if self.manual_pose == "sleep":
+                self.core.voice.set_state("sleeping")
+                return
             if self.continuous_voice and self.running and not self.core.voice.is_interrupted():
                 self.root.after(300, self._start_listening_now)
 
-        # 1. Check voice-controlled settings first
+        # 1. Check voice-controlled settings & pose commands first
         setting_reply = self._try_voice_setting(text)
         if setting_reply is not None:
-            self._show_bubble(setting_reply, dictation_text=text, duration=8.0)
+            self._show_bubble(setting_reply, dictation_text=text, show_mic_bar=False, duration=9.0)
             self.core.voice.enqueue_sentence(setting_reply, on_all_done=_after_spoken)
             return
 
@@ -430,7 +624,10 @@ class RynaRobotDesktop:
                             continue
                         full_acc += delta
                         sentence_buf += delta
-                        self.root.after(0, lambda p=full_acc, t=text: self._show_bubble(p, dictation_text=t, duration=15.0))
+                        self.root.after(
+                            0,
+                            lambda p=full_acc, t=text: self._show_bubble(p, dictation_text=t, show_mic_bar=False, duration=18.0),
+                        )
                         parts = SENTENCE_SPLIT_RE.split(sentence_buf)
                         if len(parts) > 1:
                             for sent in parts[:-1]:
@@ -443,7 +640,10 @@ class RynaRobotDesktop:
                         content = msg.get("content", "")
                         ai_ok = ev["data"].get("ai_available", False)
                         if content:
-                            self.root.after(0, lambda c=content, t=text: self._show_bubble(c, dictation_text=t, duration=10.0))
+                            self.root.after(
+                                0,
+                                lambda c=content, t=text: self._show_bubble(c, dictation_text=t, show_mic_bar=False, duration=12.0),
+                            )
                         if ai_ok and not self.core.voice.is_interrupted():
                             tail = sentence_buf.strip() if spoke_any else content
                             if tail:
@@ -451,7 +651,10 @@ class RynaRobotDesktop:
                             elif spoke_any:
                                 self.core.voice._on_all_spoken = _after_spoken
             except Exception as exc:
-                self.root.after(0, lambda e=str(exc), t=text: self._show_bubble(f"Sorry, something went wrong: {e}", dictation_text=t, duration=7.0))
+                self.root.after(
+                    0,
+                    lambda e=str(exc), t=text: self._show_bubble(f"Sorry, something went wrong: {e}", dictation_text=t, show_mic_bar=False, duration=8.0),
+                )
             finally:
                 self.is_generating = False
 
@@ -485,41 +688,44 @@ class RynaRobotDesktop:
     def show_from_tray(self) -> None:
         self.root.deiconify()
         self.root.lift()
-        self._show_bubble("I'm here.", dictation_text="", duration=4.0)
+        self._show_bubble("I'm here.", dictation_text="", show_mic_bar=False, duration=4.5)
 
-    # --- Walking + Expressive Animation Loop ---
+    # --- Expressive Interchanging Walk + Thinking + Sit + Sleep + Time-of-Day Animation Loop ---
     def _tick(self) -> None:
         if not self.running:
             return
         now = time.monotonic()
         self.state = self.core.voice.get_state()
-        accent = STATE_COLORS.get(self.state, CYAN)
-        busy = self.state in ("listening", "thinking", "speaking", "working") or self.is_listening or self.is_generating or self._dragging_now
+        is_thinking = (self.state == "thinking") or (self.is_generating and self.state != "speaking")
+        is_speaking = (self.state == "speaking") or self.is_greeting
+        busy = self.is_listening or is_thinking or is_speaking or self.state == "working" or self._dragging_now
 
-        is_walking = False
-        if self.walk_enabled and not busy:
-            if now >= self.patrol_until:
-                if self.patrol_mode == "walk":
-                    self.patrol_mode = "pause"
-                    self.patrol_until = now + random.uniform(2.5, 5.0)
-                else:
-                    self.patrol_mode = "walk"
-                    if random.random() < 0.35:
-                        self.facing *= -1
-                    self.patrol_until = now + random.uniform(4.5, 9.0)
+        # Update time-of-day autonomous action when RYNA is idle (unless locked by a voice pose command)
+        if not busy:
+            if self.manual_pose is not None:
+                self.current_action = self.manual_pose
+            elif now >= self.action_until:
+                next_act, dur = choose_timed_action(datetime.now().hour, walk_enabled=self.walk_enabled)
+                self.current_action = next_act
+                self.action_until = now + dur
+                if next_act == "walk" and random.random() < 0.4:
+                    self.facing *= -1
 
-            if self.patrol_mode == "walk":
-                is_walking = True
-                self.pos_x += self.facing * self.walk_speed
-                margin = 20
-                if self.pos_x <= margin:
-                    self.pos_x = float(margin)
-                    self.facing = 1
-                elif self.pos_x >= self.sw - self.win_w - margin:
-                    self.pos_x = float(self.sw - self.win_w - margin)
-                    self.facing = -1
-                self.root.geometry(f"+{int(self.pos_x)}+{int(self.pos_y)}")
-                self._position_bubble()
+        is_walking = (not busy) and self.walk_enabled and (self.current_action == "walk")
+        is_sleeping = (not busy) and (self.current_action == "sleep")
+        is_sitting = (not busy) and (self.current_action == "sit")
+
+        if is_walking:
+            self.pos_x += self.facing * self.walk_speed
+            margin = 20
+            if self.pos_x <= margin:
+                self.pos_x = float(margin)
+                self.facing = 1
+            elif self.pos_x >= self.sw - self.win_w - margin:
+                self.pos_x = float(self.sw - self.win_w - margin)
+                self.facing = -1
+            self.root.geometry(f"+{int(self.pos_x)}+{int(self.pos_y)}")
+            self._position_bubble()
 
         if not busy and now > self._bubble_hide_at:
             try:
@@ -528,39 +734,102 @@ class RynaRobotDesktop:
             except Exception:
                 pass
 
-        self.phase += 0.13 if busy else 0.055
-        self.step_phase = (self.step_phase + 0.27) if is_walking else 0.0
+        # Live mic volume meter inside the dictation box while listening
+        if self.is_listening and self._mic_bar.winfo_ismapped():
+            self._mic_bar.delete("all")
+            bar_w = max(8, int(250 * min(1.0, max(0.04, self.mic_level))))
+            self._mic_bar.create_rectangle(0, 0, bar_w, 5, fill=CYAN_SOFT, outline="")
+
+        self.phase += 0.12 if busy else (0.032 if is_sleeping else 0.055)
+        self.step_phase = (self.step_phase + 0.24) if is_walking else 0.0
+
+        accent = STATE_COLORS.get("thinking" if is_thinking else ("sleeping" if is_sleeping else self.state), CYAN)
 
         c = self.canvas
         c.delete("all")
         cx = self.win_w / 2
         foot_y = self.win_h - 12
 
+        # Motion speed trails when walking
         if is_walking:
             trail_dir = -self.facing
             for i in range(3):
-                y_line = foot_y - 4 - i * 8
+                y_line = foot_y - 5 - i * 8
                 x0 = cx + trail_dir * (18 + i * 8)
                 x1 = x0 + trail_dir * (26 - i * 5 + math.sin(self.step_phase + i) * 6)
                 c.create_line(x0, y_line, x1, y_line, fill=accent, width=2 if i == 0 else 1)
 
-        halo_w = self.robot_size * (0.28 + 0.04 * math.sin(self.phase * 1.5) + self.mic_level * 0.10)
+        # Ground neon halo (softer when sitting/sleeping, brighter when listening/thinking)
+        halo_scale = 0.22 if is_sleeping else (0.26 if is_sitting else 0.29)
+        halo_w = self.robot_size * (halo_scale + 0.03 * math.sin(self.phase * 1.4) + self.mic_level * 0.11)
         c.create_oval(cx - halo_w, foot_y - 5, cx + halo_w, foot_y + 5, outline=accent, width=2)
-        c.create_oval(cx - halo_w * 0.55, foot_y - 2, cx + halo_w * 0.55, foot_y + 2, fill=accent, outline="")
+        c.create_oval(cx - halo_w * 0.52, foot_y - 2, cx + halo_w * 0.52, foot_y + 2, fill=accent, outline="")
 
-        frames = self._frames_right if self.facing >= 0 else self._frames_left
-        if frames:
-            if is_walking:
-                idx = int(self.step_phase * 2.2) % len(frames)
-                y_offset = -abs(math.sin(self.step_phase)) * 7.5
-            else:
-                idx = 2
-                y_offset = math.sin(self.phase) * (4.0 if busy else 2.2)
-            c.create_image(cx, self.win_h * 0.46 + y_offset, image=frames[idx])
+        # Select the exact sprite for RYNA's current state/action!
+        sprite: ImageTk.PhotoImage | None = None
+        y_offset = 0.0
+        if is_thinking:
+            # STANDING UPRIGHT, LOOKING STRAIGHT FORWARD, TOUCHING HER HEAD!
+            sprite = self._pose_think
+            y_offset = math.sin(self.phase * 0.8) * 1.8
+        elif self.is_listening or is_speaking:
+            # Standing straight, attentively looking at the user
+            sprite = self._pose_stand
+            y_offset = math.sin(self.phase) * (2.6 + self.mic_level * 3.0)
+        elif is_walking:
+            # Genuine 4-phase interchanging leg walk cycle!
+            frames = self._walk_right if self.facing >= 0 else self._walk_left
+            if frames:
+                idx = int(self.step_phase * 1.35) % len(frames)
+                sprite = frames[idx]
+                y_offset = -abs(math.sin(self.step_phase * 1.35 * math.pi / 2.0)) * 5.5
+        elif is_sleeping:
+            sprite = self._pose_sleep
+            y_offset = math.sin(self.phase) * 1.6 + 6.0
+        elif is_sitting:
+            sprite = self._pose_sit
+            y_offset = math.sin(self.phase) * 1.4 + 6.0
+        else:
+            sprite = self._pose_stand
+            y_offset = math.sin(self.phase) * 2.0
 
-        wave = "◉" if self.state == "listening" else ("◈" if self.state == "speaking" else "●")
+        if sprite is not None:
+            c.create_image(cx, self.win_h * 0.47 + y_offset, image=sprite)
+
+        # Floating peaceful "z Z" animation when sleeping
+        if is_sleeping:
+            for k, ch in enumerate(("z", "Z", "z")):
+                t = (self.phase * 0.35 + k * 0.95) % 2.8
+                zx = cx + 26 + k * 11 + math.sin(t * 2.2) * 5
+                zy = self.win_h * 0.24 - t * 14
+                c.create_text(zx, zy, text=ch, fill="#7dd3fc", font=("Segoe UI", 9 + k, "bold"))
+
+        # Subtle thoughtful floating cyan dots near head when thinking
+        if is_thinking:
+            for k in range(3):
+                bob = math.sin(self.phase * 1.8 - k * 0.9) * 3.0
+                dx = cx + 38 + k * 9
+                dy = self.win_h * 0.16 + bob
+                c.create_oval(dx - 2, dy - 2, dx + 2, dy + 2, fill="#a5b4fc", outline="")
+
+        wave = "◉" if self.is_listening else ("◌" if is_thinking else ("◈" if is_speaking else ("☾" if is_sleeping else "●")))
         self._wave_lbl.config(text=wave, fg=accent)
-        self._state_lbl.config(text=("LISTENING" if self.is_listening else ("WALKING" if is_walking else self.state.upper())), fg=accent)
+        clock_str = datetime.now().strftime("%I:%M %p").lstrip("0")
+        if self.is_listening:
+            badge = f"LISTENING · {clock_str}"
+        elif is_thinking:
+            badge = f"THINKING · {clock_str}"
+        elif is_speaking:
+            badge = f"SPEAKING · {clock_str}"
+        elif is_walking:
+            badge = f"WALKING · {clock_str}"
+        elif is_sleeping:
+            badge = f"SLEEPING · {clock_str}"
+        elif is_sitting:
+            badge = f"SITTING · {clock_str}"
+        else:
+            badge = f"STANDING · {clock_str}"
+        self._state_lbl.config(text=badge, fg=accent)
 
         self.root.after(33, self._tick)
 

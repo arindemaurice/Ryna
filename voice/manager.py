@@ -32,18 +32,30 @@ ROBOT_STATES = (
     "error",
 )
 
-# Persistent warm Windows SAPI host script: loads System.Speech ONCE, then responds in <20ms over stdin/stdout.
+# Persistent warm Windows SAPI host script: loads System.Speech ONCE, responds in <20ms over stdin/stdout,
+# and uses a compiled .NET SpeakCompleted callback so DONE fires immediately even while blocked in ReadLine().
 PERSISTENT_SAPI_PS = r"""
 Add-Type -AssemblyName System.Speech
+Add-Type -ReferencedAssemblies System.Speech -TypeDefinition @"
+using System;
+using System.Speech.Synthesis;
+public static class RynaSapiBridge {
+    public static void Attach(SpeechSynthesizer s) {
+        s.SpeakCompleted += delegate(object sender, SpeakCompletedEventArgs e) {
+            if (!e.Cancelled) {
+                Console.Out.WriteLine("DONE");
+                Console.Out.Flush();
+            }
+        };
+    }
+}
+"@
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+[RynaSapiBridge]::Attach($s)
 $voices = @($s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name })
 $pref = $voices | Where-Object { $_ -match 'Zira' } | Select-Object -First 1
 if ($pref) { $s.SelectVoice($pref) }
 $s.Rate = 0
-Register-ObjectEvent -InputObject $s -EventName SpeakCompleted -Action {
-    [Console]::Out.WriteLine("DONE")
-    [Console]::Out.Flush()
-} | Out-Null
 [Console]::Out.WriteLine("READY")
 [Console]::Out.Flush()
 while ($true) {

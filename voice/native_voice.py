@@ -1,6 +1,4 @@
-"""Native Windows microphone capture (sounddevice + numpy VAD) with live partial dictation
-and 100% offline transcription via faster-whisper.
-"""
+"""Native Windows microphone capture (adaptive VAD + live partial dictation + 100% offline faster-whisper STT)."""
 
 from __future__ import annotations
 
@@ -49,57 +47,76 @@ class NativeSpeechRecognizer:
     def stop_recording(self) -> None:
         self._stop_event.set()
 
+    def _clean_whisper_text(self, text: str) -> str:
+        cleaned = text.strip()
+        # Filter common Whisper silence hallucinations
+        low = cleaned.lower().strip(".!?, ")
+        if low in {"", "you", "thank you", "thanks for watching", "bye", "mbc", "uh", "um", "hmm"} and len(cleaned) < 12:
+            return ""
+        return cleaned
+
     def listen_once(
         self,
         on_level: Callable[[float], None] | None = None,
         on_partial: Callable[[str], None] | None = None,
         max_seconds: float = 14.0,
-        silence_seconds: float = 0.85,
-        energy_threshold: float = 0.012,
+        silence_seconds: float = 0.95,
         sample_rate: int = 16000,
     ) -> str:
-        """Listen to real mic, emit live partial dictation previews, and return final transcript."""
+        """Listen to real Windows mic with adaptive noise floor, live partial dictation, and offline transcription."""
         import sounddevice as sd
 
         self._stop_event.clear()
         self._recording = True
         frames: list[np.ndarray] = []
         frames_lock = threading.Lock()
+        noise_samples: list[float] = []
+        threshold = 0.006
+        peak_rms = 0.0
         speech_started = False
         last_voice_ts = time.monotonic()
         start_ts = last_voice_ts
         last_partial_ts = start_ts
 
         def _callback(indata: np.ndarray, _frame_count: int, _time_info: Any, _status: Any) -> None:
-            nonlocal speech_started, last_voice_ts
+            nonlocal speech_started, last_voice_ts, threshold, peak_rms
             mono = indata[:, 0].copy()
             rms = float(np.sqrt(np.mean(mono * mono)))
+            peak_rms = max(peak_rms, rms)
             if on_level:
                 try:
-                    on_level(min(1.0, rms * 18.0))
+                    on_level(min(1.0, rms * 45.0))
                 except Exception:
                     pass
             with frames_lock:
                 frames.append(mono)
+
             now = time.monotonic()
-            if rms >= energy_threshold:
+            # Calibrate ambient noise floor during first 0.25s
+            if now - start_ts < 0.25:
+                noise_samples.append(rms)
+                if noise_samples:
+                    floor = float(np.median(noise_samples))
+                    threshold = max(0.0032, min(0.022, floor * 2.0 + 0.0016))
+                return
+
+            if rms >= threshold:
                 speech_started = True
                 last_voice_ts = now
 
         try:
             with sd.InputStream(samplerate=sample_rate, channels=1, dtype="float32", blocksize=1600, callback=_callback):
                 while not self._stop_event.is_set():
-                    time.sleep(0.06)
+                    time.sleep(0.05)
                     now = time.monotonic()
-                    # Emit live partial dictation preview every ~1.2s while speaking
-                    if on_partial and speech_started and (now - last_partial_ts) >= 1.25:
+                    if on_partial and (speech_started or peak_rms >= 0.003) and (now - last_partial_ts) >= 0.95:
                         last_partial_ts = now
                         with frames_lock:
                             snap = np.concatenate(frames).astype(np.float32) if frames else None
                         if snap is not None and len(snap) >= sample_rate // 2:
                             try:
-                                segs, _ = self._get_model().transcribe(snap, language="en", vad_filter=True, beam_size=1)
-                                partial = " ".join(s.text.strip() for s in segs if s.text.strip()).strip()
+                                segs, _ = self._get_model().transcribe(snap, language="en", vad_filter=False, beam_size=1)
+                                partial = self._clean_whisper_text(" ".join(s.text.strip() for s in segs if s.text.strip()))
                                 if partial:
                                     on_partial(partial)
                             except Exception:
@@ -109,7 +126,7 @@ class NativeSpeechRecognizer:
                         break
                     if speech_started and (now - last_voice_ts) >= silence_seconds:
                         break
-                    if not speech_started and (now - start_ts) >= 6.0:
+                    if not speech_started and (now - start_ts) >= 6.5:
                         break
         finally:
             self._recording = False
@@ -120,10 +137,11 @@ class NativeSpeechRecognizer:
                     pass
 
         with frames_lock:
-            if not frames or not speech_started:
+            if not frames or (not speech_started and peak_rms < 0.0025):
                 return ""
             audio = np.concatenate(frames).astype(np.float32)
 
         model = self._get_model()
-        segments, _info = model.transcribe(audio, language="en", vad_filter=True, beam_size=1)
-        return " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+        segments, _info = model.transcribe(audio, language="en", vad_filter=False, beam_size=1)
+        raw = " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+        return self._clean_whisper_text(raw)
