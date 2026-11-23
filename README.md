@@ -1,47 +1,25 @@
-# RYNA — Native Windows Desktop Robot & Autonomous Personal AI
+# RYNA — Pure Walking Windows Desktop AI Robot
 
-**Same RYNA. Same identity. Same memory. Same context. Online or offline.**
+**RYNA** lives directly on your Windows desktop — no website, no HTTP web server, no bulky chat window. Just RYNA herself walking across your desktop, listening through your microphone, speaking back aloud with instant barge-in interruption, and executing real local and online actions.
 
-RYNA lives directly on your Windows desktop as the isolated futuristic mini humanoid robot from your authoritative design (`app/desktop/assets/ryna_robot.png`) — with a floating cyan speech bubble, a translucent dark-navy glass HUD panel, a Windows System Tray icon, real offline & online voice conversation with instant barge-in interruption, local Ollama + Cloud AI routing, persistent 9-category memory, 8-state crash-recoverable tasks, live web search, screen capture, and permission-gated Windows app control.
+## Key Features
+- **Pure Walking Desktop Robot (`app/desktop/robot_window.py`)**: Uses your isolated transparent RYNA asset (`app/desktop/assets/ryna_robot.png`) with directional left/right stride animation, subtle tilt & footstep bounce, glowing cyan speed trails, edge-turning patrol, drag/reposition, and a floating cyan speech bubble that fades cleanly when idle.
+- **Fast Low-Latency Voice & AI**:
+  - Auto-selects your fastest installed local model (`qwen2.5:1.5b` kept warm in RAM with `keep_alive: "30m"`) and streams replies **sentence-by-sentence directly into speech** so RYNA begins talking in ~1–2 seconds offline.
+  - **Persistent Warm Windows SAPI Speaker** (`Microsoft Zira Desktop` — <20ms speech start, <15ms instant barge-in cancellation).
+  - **100% Offline Speech Recognition** (`sounddevice` + `faster-whisper` `tiny.en` pre-warmed in background with `0.65s` silence turn detection).
+  - **Ultra-Fast Online Alternatives (<0.5s)**: Set `RYNA_ALLOW_CLOUD=true` plus a **Groq** (`RYNA_OPENAI_BASE_URL=https://api.groq.com/openai/v1`, `RYNA_OPENAI_MODEL=llama-3.1-8b-instant`) or **Gemini** (`RYNA_GEMINI_API_KEY`) key in `.env`.
+- **Real Local & Online Actions**: Speak naturally — `"Open Spotify"`, `"Open Chrome"`, `"What time is it?"`, `"Look at my screen"`, `"Search the web for ..."`, `"Remember that ..."`.
 
----
-
-## What Runs Natively on Windows (No Browser Website Required)
-
-- **Authoritative Isolated Robot Asset**: `app/desktop/assets/ryna_robot.png` (385×512 transparent RGBA), `ryna_head.png`, and `ryna_icon.ico`.
-- **Desktop Presence (`app/desktop/robot_window.py`)**:
-  - Transparent borderless floating RYNA robot with smooth hover & 13-state energy halo, drag/reposition with persisted coordinates, edge-awareness, resize, always-on-top, and `pystray` Windows System Tray integration.
-  - Floating cyan-bordered speech bubble directly beside RYNA showing live listening/speaking/status updates.
-  - Floating dark-navy glass HUD panel (click RYNA to toggle) with live streaming AI chat, Action Cards, quick action pills (`Open Browser`, `Search Web`, `Check Time`, `Screen`, `More`), native **Mic (`🎤`)**, **Interrupt (`■`)**, and native **Control Center** (Memory, Tasks, Settings, DB Backup).
-- **100% Offline + Online Native Voice (`voice/native_voice.py` + `voice/manager.py`)**:
-  - Real Windows microphone capture (`sounddevice` + `numpy` RMS VAD + automatic silence turn-detection).
-  - Real **100% offline speech recognition** (`faster-whisper` `tiny.en` pre-cached locally).
-  - Real **100% offline sentence-streaming speech synthesis** via Windows SAPI (`Microsoft Zira Desktop` / `Microsoft David Desktop`).
-  - Instant barge-in interruption (clicking Mic while she speaks, clicking Interrupt `■`, clicking the speech bubble, or pressing `Esc` immediately stops speech and listens for your new input).
-- **Hybrid AI Brain (`ai/`)**:
-  - Real local Ollama token-by-token streaming (`qwen3.5:4b`, `qwen2.5:3b`, `qwen2.5:1.5b`) + Cloud OpenAI-compatible, Anthropic, and Gemini APIs with `.env`-only credentials and privacy filtering.
-  - Automatic 5-state operating mode detection (`Online · Cloud AI`, `Online · Local AI`, `Offline · Local AI`, `Offline · Limited`, `AI Unavailable`).
-- **Real Computer Control, Vision & Online Search**:
-  - Natural spoken or typed actions: `"Open Spotify"`, `"Open Chrome"`, `"Open VS Code"`, `"What time is it?"`, `"Look at my screen"` (`mss` capture + active window title), `"Search the web for ..."` (live DuckDuckGo search with untrusted-content isolation), `"Remember that ..."`.
-
----
-
-## How to Run RYNA
-
+## Run RYNA
 ```powershell
-# Launch RYNA directly onto your Windows desktop (robot + speech bubble + glass HUD + system tray)
 powershell -ExecutionPolicy Bypass -File scripts\run.ps1
-
-# Run all automated tests (Python + Rust + Flutter when available)
-powershell -ExecutionPolicy Bypass -File scripts\test.ps1
-
-# Optional: Enable / disable Windows login auto-start
-powershell -ExecutionPolicy Bypass -File scripts\startup_windows.ps1 -Action status
-powershell -ExecutionPolicy Bypass -File scripts\startup_windows.ps1 -Action enable
-
-# Optional: Run headless engine only or open secondary browser UI
-powershell -ExecutionPolicy Bypass -File scripts\run.ps1 -Headless
-powershell -ExecutionPolicy Bypass -File scripts\run.ps1 -WebUI
 ```
+- **Click RYNA**: Speak to her (or interrupt her mid-sentence if she is talking).
+- **Drag RYNA**: Move her anywhere on your desktop.
+- **Right-click RYNA (or System Tray icon)**: Toggle Walking / Stay Put, Toggle Continuous Voice, Switch Local Model (`qwen2.5:1.5b` / `3b` / `4b`), Quick Type Command, Resize, Hide, or Exit.
 
-See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for the complete 37-domain requirements & verification tracker, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system structure.
+## Run Tests
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\test.ps1
+```

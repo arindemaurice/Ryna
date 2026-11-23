@@ -76,8 +76,23 @@ class RynaCore:
             self.record_activity("task", "task_recovery", f"Recovered {len(self.recovered_tasks)} interrupted task(s) on boot.", "warn")
         self.logger.info("%s %s core initialized (db=%s)", APP_NAME, VERSION, self.config.db_path)
 
+    def warm_up_async(self) -> None:
+        """Warm up Windows SAPI, faster-whisper, and fast local Ollama model in parallel on startup."""
+        self.voice.warm_up_async()
+
+        def _warm_ollama() -> None:
+            try:
+                provs = self.ai.build_providers()
+                ollama = provs.get("ollama")
+                if ollama and hasattr(ollama, "warm_up"):
+                    ollama.warm_up()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        threading.Thread(target=_warm_ollama, daemon=True).start()
+
     def close(self) -> None:
-        self.voice.stop_native_speech()
+        self.voice.shutdown()
         self.logger.info("Shutting down %s %s core.", APP_NAME, VERSION)
         self.db.close()
         for h in list(self.logger.handlers):

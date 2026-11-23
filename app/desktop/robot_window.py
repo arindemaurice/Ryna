@@ -1,39 +1,38 @@
-"""RYNA Native Windows Desktop Presence — The Robot IS RYNA.
+"""RYNA Pure Walking Desktop Robot (Windows Native).
 
-Renders directly on the Windows desktop (no browser website required):
-1. Transparent floating RYNA robot (`app/desktop/assets/ryna_robot.png`) with hover/state glow,
-   movable & resizable with persisted coordinates and edge awareness.
-2. Floating cyan-bordered speech bubble right above RYNA showing live listening/speaking/status.
-3. Floating translucent dark-navy glass HUD panel (matching the authoritative RYNA desktop design)
-   with live streaming conversation, real Action Cards, quick real tools, native microphone button
-   (sounddevice + offline faster-whisper), instant barge-in interrupt, and Memory/Tasks/Settings dialogs.
-4. Native Windows System Tray icon (pystray) using RYNA's cropped head icon.
-
-Connected directly to the single RynaCore instance (same identity, memory, tasks, local/cloud AI, and voice).
+NO website. NO bloated chat application window. ONLY RYNA living directly on your desktop:
+- Transparent isolated RYNA robot (`ryna_robot.png`) that ACTUALLY WALKS smoothly across your
+  desktop with directional left/right stride animation, subtle tilt/step bounce, and glowing
+  cyan speed trails beneath her feet.
+- Real two-way voice conversation: click RYNA (or double-click / tray / Continuous mode) to
+  speak via your Windows mic (`sounddevice` + `faster-whisper` 100% offline), stream responses
+  from warm `qwen2.5:1.5b` (or ultra-fast Groq/Cloud), and hear RYNA speak back sentence-by-sentence
+  immediately via the persistent warm Windows SAPI speaker (<20ms start, <15ms barge-in!).
+- Compact glowing cyan speech bubble right above RYNA that appears while listening/speaking
+  and fades away cleanly when idle so your desktop stays uncluttered.
+- Native Windows System Tray icon (`pystray`) + right-click quick controls.
 """
 
 from __future__ import annotations
 
 import math
+import random
+import re
 import threading
+import time
 import tkinter as tk
-from pathlib import Path
-from tkinter import simpledialog, ttk
+from tkinter import simpledialog
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageTk
 
 from ai.orchestration.core import RynaCore
 
 TRANSPARENT_KEY = "#010203"
-BG_GLASS = "#07101f"
-BG_CARD = "#0c192f"
-BG_INPUT = "#0a1528"
+BG_BUBBLE = "#07101f"
 CYAN = "#22d3ee"
 CYAN_SOFT = "#38bdf8"
-BLUE = "#2563eb"
 TEXT_MAIN = "#eef5ff"
-TEXT_MUTED = "#90a7c7"
 
 STATE_COLORS: dict[str, str] = {
     "idle": "#22d3ee",
@@ -51,9 +50,11 @@ STATE_COLORS: dict[str, str] = {
     "error": "#f87171",
 }
 
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
-class RynaDesktopApp:
-    """Native Windows desktop robot, floating speech bubble, glass HUD, and system tray."""
+
+class RynaRobotDesktop:
+    """Pure walking transparent desktop robot with instant streaming voice & floating bubble."""
 
     def __init__(self, core: RynaCore) -> None:
         self.core = core
@@ -62,24 +63,32 @@ class RynaDesktopApp:
         self.head_png = self.assets_dir / "ryna_head.png"
 
         s = core.db.get_all_settings()
-        self.robot_size = max(130, min(280, int(s.get("desktop.robot_size", 190))))
+        self.robot_size = max(120, min(260, int(s.get("desktop.robot_size", 170))))
         self.alpha = float(s.get("desktop.robot_transparency", 0.98))
         self.always_on_top = bool(s.get("desktop.robot_always_on_top", True))
+        self.walk_enabled = bool(s.get("desktop.robot_walk_enabled", True))
         self.continuous_voice = str(s.get("voice.mode", "push_to_talk")) == "continuous"
 
-        self.phase = 0.0
-        self.mic_level = 0.0
-        self.state = "idle"
+        # Runtime animation & walking physics
         self.running = True
-        self.visible = True
-        self.hud_open = True
-        self.active_conv_id: str | None = None
-        self.is_generating = False
+        self.state = "idle"
+        self.phase = 0.0
+        self.step_phase = 0.0
+        self.mic_level = 0.0
+        self.facing = 1  # +1 = right, -1 = left
+        self.walk_speed = 2.6
+        self.patrol_mode = "walk"  # "walk" | "pause"
+        self.patrol_until = time.monotonic() + random.uniform(4.0, 8.0)
+
         self.is_listening = False
+        self.is_generating = False
+        self.active_conv_id: str | None = None
+        self._bubble_hide_at = time.monotonic() + 7.0
         self._tray_icon: Any = None
         self._drag_x = 0
         self._drag_y = 0
         self._dragged = False
+        self._dragging_now = False
 
         # --- 1. Root Transparent Robot Window ---
         self.root = tk.Tk()
@@ -93,417 +102,219 @@ class RynaDesktopApp:
         self.root.attributes("-topmost", self.always_on_top)
         self.root.attributes("-alpha", self.alpha)
 
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        saved_x = int(s.get("desktop.robot_x", -1))
-        saved_y = int(s.get("desktop.robot_y", -1))
-        rx = saved_x if 0 <= saved_x <= sw - 80 else (sw - self.robot_size - 160)
-        ry = saved_y if 0 <= saved_y <= sh - 80 else 110
-        self.root.geometry(f"{self.robot_size}x{self.robot_size + 28}+{rx}+{ry}")
+        self.sw = self.root.winfo_screenwidth()
+        self.sh = self.root.winfo_screenheight()
+        self.pos_x = float(int(s.get("desktop.robot_x", -1)))
+        self.pos_y = float(int(s.get("desktop.robot_y", -1)))
+        if not (0 <= self.pos_x <= self.sw - self.robot_size):
+            self.pos_x = float(self.sw - self.robot_size - 120)
+        if not (0 <= self.pos_y <= self.sh - self.robot_size - 48):
+            self.pos_y = float(self.sh - self.robot_size - 72)
+
+        self.win_w = self.robot_size + 44  # room for speed trails behind heels
+        self.win_h = self.robot_size + 26
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.pos_x)}+{int(self.pos_y)}")
 
         self.canvas = tk.Canvas(
             self.root,
-            width=self.robot_size,
-            height=self.robot_size + 28,
+            width=self.win_w,
+            height=self.win_h,
             bg=TRANSPARENT_KEY,
             highlightthickness=0,
+            cursor="hand2",
         )
         self.canvas.pack(fill="both", expand=True)
 
-        self._robot_photo: ImageTk.PhotoImage | None = None
-        self._head_photo_sm: ImageTk.PhotoImage | None = None
-        self._load_assets()
-        self._build_robot_menu()
-        self._bind_robot_events()
+        # Pre-baked directional stride frames (right & left + subtle stride tilt)
+        self._frames_right: list[ImageTk.PhotoImage] = []
+        self._frames_left: list[ImageTk.PhotoImage] = []
+        self._load_stride_frames()
+        self._build_context_menu()
+        self._bind_events()
 
-        # --- 2. Floating Speech Bubble Above/Beside RYNA ---
+        # --- 2. Compact Floating Cyan Speech Bubble Above RYNA ---
         self.bubble = tk.Toplevel(self.root)
         self.bubble.overrideredirect(True)
         self.bubble.configure(bg=CYAN)
         self.bubble.attributes("-topmost", True)
         self.bubble.attributes("-alpha", 0.94)
-        self._bubble_inner = tk.Frame(self.bubble, bg=BG_GLASS, padx=12, pady=8)
-        self._bubble_inner.pack(fill="both", expand=True, padx=1, pady=1)
+        self._bubble_frame = tk.Frame(self.bubble, bg=BG_BUBBLE, padx=11, pady=7)
+        self._bubble_frame.pack(fill="both", expand=True, padx=1, pady=1)
 
-        b_head = tk.Frame(self._bubble_inner, bg=BG_GLASS)
-        b_head.pack(fill="x")
-        self._bubble_wave = tk.Label(b_head, text="●", fg=CYAN, bg=BG_GLASS, font=("Segoe UI", 9, "bold"))
-        self._bubble_wave.pack(side="left", padx=(0, 6))
-        tk.Label(b_head, text="RYNA", fg=TEXT_MAIN, bg=BG_GLASS, font=("Segoe UI", 9, "bold")).pack(side="left")
-        self._bubble_state_lbl = tk.Label(b_head, text="IDLE", fg=CYAN_SOFT, bg=BG_GLASS, font=("Segoe UI", 8))
-        self._bubble_state_lbl.pack(side="right")
+        top = tk.Frame(self._bubble_frame, bg=BG_BUBBLE)
+        top.pack(fill="x")
+        self._wave_lbl = tk.Label(top, text="●", fg=CYAN, bg=BG_BUBBLE, font=("Segoe UI", 9, "bold"))
+        self._wave_lbl.pack(side="left", padx=(0, 5))
+        tk.Label(top, text="RYNA", fg=TEXT_MAIN, bg=BG_BUBBLE, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self._state_lbl = tk.Label(top, text="READY", fg=CYAN_SOFT, bg=BG_BUBBLE, font=("Segoe UI", 8))
+        self._state_lbl.pack(side="right")
 
-        self._bubble_text = tk.StringVar(value="I'm here. What would you like me to do?")
-        self._bubble_lbl = tk.Label(
-            self._bubble_inner,
-            textvariable=self._bubble_text,
+        self._bubble_var = tk.StringVar(value="I'm here! Click me to speak — right-click for options.")
+        tk.Label(
+            self._bubble_frame,
+            textvariable=self._bubble_var,
             fg="#dbeafe",
-            bg=BG_GLASS,
-            wraplength=235,
+            bg=BG_BUBBLE,
+            wraplength=240,
             justify="left",
             font=("Segoe UI", 9),
-        )
-        self._bubble_lbl.pack(fill="x", pady=(4, 0))
-        self.bubble.bind("<Button-1>", lambda _e: self.interrupt_now() if self.state == "speaking" else self.toggle_hud())
+        ).pack(fill="x", pady=(3, 0))
+        self.bubble.bind("<Button-1>", lambda _e: self.interrupt_now() if self.state == "speaking" else self.toggle_mic())
         self._position_bubble()
 
-        # --- 3. Floating Translucent Dark Glass HUD Panel ---
-        self._build_hud_panel(sw, sh)
-
-        # --- 4. System Tray Icon ---
+        # --- 3. Tray & Background Warm-Up ---
         self._start_tray()
+        self.core.warm_up_async()
 
-        # Subscribe to real RynaCore state updates
-        self._event_sub = self.core.events.subscribe()
-        threading.Thread(target=self._event_loop, daemon=True).start()
+        # Speak a brief warm greeting once SAPI is ready (async, non-blocking)
+        def _greet() -> None:
+            time.sleep(0.9)
+            if self.running:
+                try:
+                    self.core.voice.speak_native("I'm here. Click me anytime to talk.")
+                except Exception:
+                    pass
 
-        # Refresh real live operating mode & greet naturally
-        self._refresh_hud_status()
-        self._load_recent_conversation()
-        self._animate()
+        threading.Thread(target=_greet, daemon=True).start()
+        self._tick()
 
-    def _load_assets(self) -> None:
-        if self.robot_png.is_file():
-            img = Image.open(self.robot_png).convert("RGBA")
-            img.thumbnail((self.robot_size - 16, self.robot_size - 16), Image.Resampling.LANCZOS)
-            self._robot_photo = ImageTk.PhotoImage(img)
-        if self.head_png.is_file():
-            himg = Image.open(self.head_png).convert("RGBA").resize((30, 30), Image.Resampling.LANCZOS)
-            self._head_photo_sm = ImageTk.PhotoImage(himg)
+    def _load_stride_frames(self) -> None:
+        self._frames_right.clear()
+        self._frames_left.clear()
+        if not self.robot_png.is_file():
+            return
+        base = Image.open(self.robot_png).convert("RGBA")
+        base.thumbnail((self.robot_size - 14, self.robot_size - 14), Image.Resampling.LANCZOS)
+        flipped = base.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
 
-    def _build_robot_menu(self) -> None:
-        self.menu = tk.Menu(self.root, tearoff=0, bg=BG_GLASS, fg=TEXT_MAIN, activebackground="#162847")
+        # 6 smooth stride tilt angles for lifelike walking motion
+        angles = (-4.5, -2.0, 0.5, 3.0, 1.0, -1.5)
+        for deg in angles:
+            r_rot = base.rotate(deg, resample=Image.Resampling.BICUBIC, expand=True)
+            l_rot = flipped.rotate(-deg, resample=Image.Resampling.BICUBIC, expand=True)
+            self._frames_right.append(ImageTk.PhotoImage(r_rot))
+            self._frames_left.append(ImageTk.PhotoImage(l_rot))
+
+    def _build_context_menu(self) -> None:
+        self.menu = tk.Menu(self.root, tearoff=0, bg=BG_BUBBLE, fg=TEXT_MAIN, activebackground="#162b4a")
         self.menu.add_command(label="🎤 Speak to RYNA", command=self.toggle_mic)
-        self.menu.add_command(label="💬 Show / Hide Chat HUD", command=self.toggle_hud)
         self.menu.add_command(label="■ Interrupt Speaking", command=self.interrupt_now)
+        self.menu.add_command(label="⌨ Quick Type Command…", command=self._quick_type_prompt)
         self.menu.add_separator()
-        size_m = tk.Menu(self.menu, tearoff=0, bg=BG_GLASS, fg=TEXT_MAIN)
-        for label, px in (("Compact (150px)", 150), ("Standard (190px)", 190), ("Large (240px)", 240)):
-            size_m.add_command(label=label, command=lambda p=px: self._resize_robot(p))
+        self.menu.add_command(label="🚶 Toggle Walking / Stay Put", command=self.toggle_walking)
+        self.menu.add_command(label="🔁 Toggle Continuous Voice", command=self.toggle_continuous_voice)
+
+        size_m = tk.Menu(self.menu, tearoff=0, bg=BG_BUBBLE, fg=TEXT_MAIN)
+        for lbl, px in (("Small (135px)", 135), ("Medium (170px)", 170), ("Large (220px)", 220)):
+            size_m.add_command(label=lbl, command=lambda p=px: self._resize(p))
         self.menu.add_cascade(label="Robot Size", menu=size_m)
-        self.menu.add_command(label="Toggle Continuous Voice", command=self._toggle_continuous_voice)
+
+        # Quick local model switcher (fast vs stronger)
+        mod_m = tk.Menu(self.menu, tearoff=0, bg=BG_BUBBLE, fg=TEXT_MAIN)
+        for m in ("qwen2.5:1.5b", "qwen2.5:3b", "qwen3.5:4b"):
+            mod_m.add_command(label=f"Use {m}", command=lambda mn=m: self._select_local_model(mn))
+        self.menu.add_cascade(label="Local AI Model", menu=mod_m)
+
         self.menu.add_command(label="Toggle Always On Top", command=self._toggle_topmost)
-        self.menu.add_command(label="Memory / Tasks / Settings…", command=self._open_control_center)
         self.menu.add_separator()
         self.menu.add_command(label="Hide to System Tray", command=self.hide_to_tray)
         self.menu.add_command(label="Exit RYNA", command=self.quit_app)
 
-    def _bind_robot_events(self) -> None:
+    def _bind_events(self) -> None:
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
-        self.canvas.bind("<Double-Button-1>", lambda _e: self.toggle_mic())
         self.canvas.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+        self.root.bind("<Escape>", lambda _e: self.interrupt_now())
 
     def _on_press(self, e: tk.Event) -> None:
-        self._drag_x, self._drag_y, self._dragged = e.x, e.y, False
+        self._drag_x, self._drag_y = e.x, e.y
+        self._dragged = False
+        self._dragging_now = True
 
     def _on_drag(self, e: tk.Event) -> None:
-        if abs(e.x - self._drag_x) > 3 or abs(e.y - self._drag_y) > 3:
+        if abs(e.x - self._drag_x) > 4 or abs(e.y - self._drag_y) > 4:
             self._dragged = True
-        x = self.root.winfo_x() + (e.x - self._drag_x)
-        y = self.root.winfo_y() + (e.y - self._drag_y)
-        self.root.geometry(f"+{x}+{y}")
+        nx = self.root.winfo_x() + (e.x - self._drag_x)
+        ny = self.root.winfo_y() + (e.y - self._drag_y)
+        self.pos_x, self.pos_y = float(nx), float(ny)
+        self.root.geometry(f"+{nx}+{ny}")
         self._position_bubble()
 
     def _on_release(self, _e: tk.Event) -> None:
+        self._dragging_now = False
         if not self._dragged:
-            self.toggle_hud()
+            # Clicking RYNA directly talks to her (or interrupts if she's speaking!)
+            self.toggle_mic()
             return
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        x = max(8, min(sw - self.robot_size - 8, self.root.winfo_x()))
-        y = max(8, min(sh - self.robot_size - 56, self.root.winfo_y()))
-        if x < 24:
-            x = 12
-        elif sw - (x + self.robot_size) < 24:
-            x = sw - self.robot_size - 12
-        self.root.geometry(f"+{x}+{y}")
+        self.pos_x = float(max(6, min(self.sw - self.win_w - 6, int(self.pos_x))))
+        self.pos_y = float(max(6, min(self.sh - self.win_h - 46, int(self.pos_y))))
+        self.root.geometry(f"+{int(self.pos_x)}+{int(self.pos_y)}")
         self._position_bubble()
-        self.core.db.update_settings({"desktop.robot_x": x, "desktop.robot_y": y})
+        self.core.db.update_settings({"desktop.robot_x": int(self.pos_x), "desktop.robot_y": int(self.pos_y)})
 
     def _position_bubble(self) -> None:
         try:
-            self.root.update_idletasks()
-            rx = self.root.winfo_x()
-            ry = self.root.winfo_y()
-            bx = max(12, rx - 255)
-            by = max(12, ry + 8)
+            bx = int(self.pos_x) - 210 if self.pos_x > 240 else int(self.pos_x) + self.win_w + 6
+            by = max(12, int(self.pos_y) - 52)
             self.bubble.geometry(f"+{bx}+{by}")
         except Exception:
             pass
 
-    def _resize_robot(self, px: int) -> None:
+    def _show_bubble(self, text: str, duration: float = 8.0) -> None:
+        short = text.strip()
+        if len(short) > 190:
+            short = short[:187] + "…"
+        self._bubble_var.set(short)
+        self._bubble_hide_at = time.monotonic() + duration
+        try:
+            self.bubble.deiconify()
+            self._position_bubble()
+        except Exception:
+            pass
+
+    def _resize(self, px: int) -> None:
         self.robot_size = px
-        self.root.geometry(f"{px}x{px + 28}+{self.root.winfo_x()}+{self.root.winfo_y()}")
-        self.canvas.config(width=px, height=px + 28)
-        self._load_assets()
+        self.win_w = px + 44
+        self.win_h = px + 26
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.pos_x)}+{int(self.pos_y)}")
+        self.canvas.config(width=self.win_w, height=self.win_h)
+        self._load_stride_frames()
         self._position_bubble()
         self.core.db.set_setting("desktop.robot_size", px)
+
+    def _select_local_model(self, model_name: str) -> None:
+        self.core.db.set_setting("ai.local_model", model_name)
+        self._show_bubble(f"Switched local model to {model_name}. Warming up…", 5.0)
+        self.core.warm_up_async()
 
     def _toggle_topmost(self) -> None:
         self.always_on_top = not self.always_on_top
         self.root.attributes("-topmost", self.always_on_top)
-        self.hud.attributes("-topmost", self.always_on_top)
         self.core.db.set_setting("desktop.robot_always_on_top", self.always_on_top)
 
-    def _toggle_continuous_voice(self) -> None:
+    def toggle_walking(self) -> None:
+        self.walk_enabled = not self.walk_enabled
+        self.core.db.set_setting("desktop.robot_walk_enabled", self.walk_enabled)
+        self._show_bubble("Walking enabled!" if self.walk_enabled else "Staying right here.", 3.5)
+
+    def toggle_continuous_voice(self) -> None:
         self.continuous_voice = not self.continuous_voice
-        mode = "continuous" if self.continuous_voice else "push_to_talk"
-        self.core.db.set_setting("voice.mode", mode)
-        self._set_bubble(f"Voice mode: {'Continuous conversation' if self.continuous_voice else 'Push-to-talk'}.")
-
-    # --- 3. Floating Glass HUD Panel ---
-    def _build_hud_panel(self, sw: int, sh: int) -> None:
-        self.hud = tk.Toplevel(self.root)
-        self.hud.title("RYNA")
-        self.hud.overrideredirect(True)
-        self.hud.configure(bg=CYAN)
-        self.hud.attributes("-topmost", self.always_on_top)
-        self.hud.attributes("-alpha", 0.95)
-        w, h = 420, 460
-        hx = max(20, sw - w - 28)
-        hy = max(60, sh - h - 72)
-        self.hud.geometry(f"{w}x{h}+{hx}+{hy}")
-
-        outer = tk.Frame(self.hud, bg=BG_GLASS)
-        outer.pack(fill="both", expand=True, padx=1, pady=1)
-
-        # Draggable HUD header
-        hdr = tk.Frame(outer, bg="#0a162b", padx=12, pady=9)
-        hdr.pack(fill="x")
-        self._hud_drag = {"x": 0, "y": 0}
-        hdr.bind("<ButtonPress-1>", lambda e: self._hud_drag.update(x=e.x, y=e.y))
-        hdr.bind("<B1-Motion>", lambda e: self.hud.geometry(f"+{self.hud.winfo_x() + e.x - self._hud_drag['x']}+{self.hud.winfo_y() + e.y - self._hud_drag['y']}"))
-
-        if self._head_photo_sm:
-            tk.Label(hdr, image=self._head_photo_sm, bg="#0a162b").pack(side="left", padx=(0, 8))
-        title_box = tk.Frame(hdr, bg="#0a162b")
-        title_box.pack(side="left", fill="x", expand=True)
-        tk.Label(title_box, text="RYNA", fg=TEXT_MAIN, bg="#0a162b", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        self._hud_status_var = tk.StringVar(value="● Detecting mode…")
-        self._hud_status_lbl = tk.Label(title_box, textvariable=self._hud_status_var, fg="#34d399", bg="#0a162b", font=("Segoe UI", 9))
-        self._hud_status_lbl.pack(anchor="w")
-
-        tk.Button(hdr, text="⚙", command=self._open_control_center, bg="#0a162b", fg=TEXT_MUTED, relief="flat", font=("Segoe UI", 10), cursor="hand2").pack(side="right", padx=2)
-        tk.Button(hdr, text="—", command=self.toggle_hud, bg="#0a162b", fg=TEXT_MUTED, relief="flat", font=("Segoe UI", 10), cursor="hand2").pack(side="right", padx=2)
-
-        # Scrollable Chat Stream
-        chat_wrap = tk.Frame(outer, bg=BG_GLASS)
-        chat_wrap.pack(fill="both", expand=True, padx=10, pady=(8, 4))
-        self.chat_text = tk.Text(
-            chat_wrap,
-            bg=BG_GLASS,
-            fg=TEXT_MAIN,
-            wrap="word",
-            relief="flat",
-            font=("Segoe UI", 10),
-            padx=6,
-            pady=6,
-            state="disabled",
-            cursor="arrow",
+        self.core.db.set_setting("voice.mode", "continuous" if self.continuous_voice else "push_to_talk")
+        self._show_bubble(
+            "Continuous voice ON — I'll keep listening after I reply." if self.continuous_voice else "Push-to-talk mode — click me when you want to speak.",
+            4.5,
         )
-        sb = ttk.Scrollbar(chat_wrap, orient="vertical", command=self.chat_text.yview)
-        self.chat_text.configure(yscrollcommand=sb.set)
-        self.chat_text.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
 
-        self.chat_text.tag_configure("user_lbl", foreground="#7dd3fc", font=("Segoe UI", 8, "bold"), justify="right")
-        self.chat_text.tag_configure("user_msg", foreground="#ffffff", background="#15325c", lmargin1=55, lmargin2=55, rmargin=6, spacing1=2, spacing3=8)
-        self.chat_text.tag_configure("ryna_lbl", foreground=CYAN, font=("Segoe UI", 8, "bold"))
-        self.chat_text.tag_configure("ryna_msg", foreground=TEXT_MAIN, background=BG_CARD, lmargin1=6, lmargin2=6, rmargin=28, spacing1=2, spacing3=8)
-        self.chat_text.tag_configure("card_msg", foreground="#a7f3d0", background="#0c2430", lmargin1=10, lmargin2=10, rmargin=20, spacing1=2, spacing3=8, font=("Consolas", 9))
-        self.chat_text.tag_configure("sys_msg", foreground="#fde68a", lmargin1=6, spacing3=8, font=("Segoe UI", 9))
+    def _quick_type_prompt(self) -> None:
+        txt = simpledialog.askstring("Ask RYNA", "Type a message or command for RYNA:", parent=self.root)
+        if txt and txt.strip():
+            self.handle_user_input(txt.strip())
 
-        # Quick Real Action Pills (matching reference screenshot!)
-        pill_row = tk.Frame(outer, bg=BG_GLASS, padx=10, pady=4)
-        pill_row.pack(fill="x")
-        for label, cmd in (
-            ("🌐 Open Browser", lambda: self.send_user_text("open browser")),
-            ("🔎 Search Web", self._prompt_web_search),
-            ("🕒 Check Time", lambda: self.send_user_text("what time is it")),
-            ("🖥 Screen", lambda: self.send_user_text("look at my screen")),
-            ("More ▾", self._open_control_center),
-        ):
-            tk.Button(
-                pill_row,
-                text=label,
-                command=cmd,
-                bg=BG_CARD,
-                fg="#cbd5e1",
-                activebackground="#173055",
-                activeforeground="#ffffff",
-                relief="flat",
-                font=("Segoe UI", 8),
-                padx=7,
-                pady=4,
-                cursor="hand2",
-            ).pack(side="left", padx=(0, 4))
-
-        # Bottom Voice + Text Input Bar
-        inp_bar = tk.Frame(outer, bg="#091326", padx=10, pady=9)
-        inp_bar.pack(fill="x")
-
-        self.mic_btn = tk.Button(
-            inp_bar,
-            text="🎤",
-            command=self.toggle_mic,
-            bg="#0e2545",
-            fg=CYAN,
-            activebackground="#153c6b",
-            relief="flat",
-            font=("Segoe UI", 11),
-            width=3,
-            cursor="hand2",
-        )
-        self.mic_btn.pack(side="left", padx=(0, 6))
-
-        self.stop_btn = tk.Button(
-            inp_bar,
-            text="■",
-            command=self.interrupt_now,
-            bg="#3b1822",
-            fg="#fca5a5",
-            relief="flat",
-            font=("Segoe UI", 10, "bold"),
-            width=3,
-            cursor="hand2",
-        )
-        self.stop_btn.pack(side="left", padx=(0, 6))
-
-        self.entry = tk.Entry(
-            inp_bar,
-            bg=BG_INPUT,
-            fg=TEXT_MAIN,
-            insertbackground=CYAN,
-            relief="flat",
-            font=("Segoe UI", 10),
-        )
-        self.entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 6))
-        self.entry.bind("<Return>", lambda _e: self._on_submit_entry())
-        self.entry.bind("<Escape>", lambda _e: self.interrupt_now())
-
-        tk.Button(
-            inp_bar,
-            text="➤",
-            command=self._on_submit_entry,
-            bg=BLUE,
-            fg="#ffffff",
-            activebackground="#0284c7",
-            relief="flat",
-            font=("Segoe UI", 10, "bold"),
-            width=3,
-            cursor="hand2",
-        ).pack(side="right")
-
-    def _prompt_web_search(self) -> None:
-        q = simpledialog.askstring("Search Web via RYNA", "What should RYNA search for?", parent=self.hud)
-        if q and q.strip():
-            self.send_user_text(f"search web for {q.strip()}")
-
-    def _append_chat(self, role: str, text: str, card: dict[str, Any] | None = None, meta: str = "") -> None:
-        self.chat_text.configure(state="normal")
-        if role == "user":
-            self.chat_text.insert("end", "You\n", "user_lbl")
-            self.chat_text.insert("end", f" {text.strip()} \n\n", "user_msg")
-        elif role == "assistant":
-            hdr = f"RYNA{f' · {meta}' if meta else ''}\n"
-            self.chat_text.insert("end", hdr, "ryna_lbl")
-            if card:
-                self.chat_text.insert("end", f" [{card.get('title','')}] {card.get('value','')} — {card.get('subtitle','')}\n", "card_msg")
-            self.chat_text.insert("end", f"{text.strip()}\n\n", "ryna_msg")
-        else:
-            self.chat_text.insert("end", f"{text.strip()}\n\n", "sys_msg")
-        self.chat_text.configure(state="disabled")
-        self.chat_text.see("end")
-
-    def _load_recent_conversation(self) -> None:
-        convs = self.core.db.list_conversations(limit=1)
-        if convs:
-            self.active_conv_id = convs[0]["id"]
-            for m in self.core.db.list_messages(self.active_conv_id, limit=20):
-                self._append_chat(m["role"], m["content"], m.get("metadata", {}).get("action_card"), m.get("model") or "")
-        else:
-            self._append_chat("assistant", "I'm here. Click the microphone to speak to me, or type anything below.")
-
-    def _refresh_hud_status(self) -> None:
-        def _work() -> None:
-            try:
-                st = self.core.status_summary()
-                op = st["operating_mode"]
-                lbl = f"● {op['label']}" + (f" ({op['active_model']})" if op.get("active_model") else "")
-                color = "#34d399" if op["id"].startswith("online_") else ("#38bdf8" if op["id"] == "offline_local_ai" else "#fbbf24")
-                self.root.after(0, lambda: (self._hud_status_var.set(lbl), self._hud_status_lbl.config(fg=color)))
-            except Exception:
-                pass
-            if self.running:
-                self.root.after(15000, self._refresh_hud_status)
-
-        threading.Thread(target=_work, daemon=True).start()
-
-    def _set_bubble(self, text: str) -> None:
-        short = text.strip()
-        if len(short) > 165:
-            short = short[:162] + "…"
-        self._bubble_text.set(short)
-        self._position_bubble()
-
-    def _on_submit_entry(self) -> None:
-        txt = self.entry.get().strip()
-        if not txt:
-            return
-        self.entry.delete(0, "end")
-        self.send_user_text(txt)
-
-    def send_user_text(self, text: str, from_voice: bool = False) -> None:
-        if self.is_generating:
-            self.interrupt_now()
-        self._append_chat("user", text)
-        self._set_bubble("Thinking…")
-        self.is_generating = True
-
-        def _worker() -> None:
-            acc: list[str] = []
-            final_msg: dict[str, Any] | None = None
-            ai_ok = True
-            try:
-                for ev in self.core.stream_chat(self.active_conv_id, text):
-                    if ev["event"] == "meta":
-                        self.active_conv_id = ev["data"]["conversation_id"]
-                    elif ev["event"] == "delta":
-                        acc.append(ev["data"].get("delta", ""))
-                        preview = "".join(acc).strip()
-                        if preview:
-                            self.root.after(0, lambda p=preview: self._set_bubble(p[-150:]))
-                    elif ev["event"] in ("done", "error"):
-                        final_msg = ev["data"].get("assistant_message")
-                        ai_ok = ev["data"].get("ai_available", False)
-            except Exception as exc:
-                self.root.after(0, lambda e=str(exc): self._append_chat("system", f"Error: {e}"))
-            finally:
-                self.is_generating = False
-                if final_msg:
-                    content = final_msg.get("content", "")
-                    card = final_msg.get("metadata", {}).get("action_card")
-                    model_lbl = final_msg.get("model") or ""
-                    role = final_msg.get("role", "assistant")
-                    self.root.after(0, lambda: (self._append_chat(role, content, card, model_lbl), self._set_bubble(content)))
-
-                    auto_speak = bool(self.core.db.get_setting("voice.auto_speak", True))
-                    if ai_ok and content and (from_voice or auto_speak):
-                        def _after_speak() -> None:
-                            if self.continuous_voice and self.running:
-                                self.root.after(250, self.toggle_mic)
-
-                        try:
-                            self.core.voice.speak_native(content, on_finished=_after_speak)
-                        except Exception as exc:
-                            self.root.after(0, lambda e=str(exc): self._set_bubble(f"Voice output error: {e}"))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
+    # --- Real Two-Way Streaming Voice Interaction ---
     def toggle_mic(self) -> None:
         # Instant barge-in: if RYNA is speaking right now, cut her off immediately and listen!
-        if self.core.voice.get_state() == "speaking":
+        if self.core.voice.get_state() == "speaking" or self.is_generating:
             self.interrupt_now()
 
         if self.is_listening:
@@ -511,183 +322,97 @@ class RynaDesktopApp:
             return
 
         self.is_listening = True
-        self.mic_btn.config(bg="#0284c7", fg="#ffffff")
-        self._set_bubble("Listening… speak naturally.")
+        self._show_bubble("Listening… speak naturally.", duration=18.0)
 
-        def _work() -> None:
+        def _worker() -> None:
             try:
-                transcript = self.core.voice.listen_native(on_level=self._on_mic_level)
+                transcript = self.core.voice.listen_native(on_level=lambda lvl: setattr(self, "mic_level", lvl))
                 self.is_listening = False
-                self.root.after(0, lambda: self.mic_btn.config(bg="#0e2545", fg=CYAN))
+                self.mic_level = 0.0
                 if transcript:
                     self.core.record_activity("voice", "voice_transcript", f'Heard: "{transcript[:90]}"', "ok")
-                    self.root.after(0, lambda t=transcript: self.send_user_text(t, from_voice=True))
+                    self.root.after(0, lambda t=transcript: self.handle_user_input(t))
                 else:
-                    self.root.after(0, lambda: self._set_bubble("I didn't catch that. Click mic to speak again."))
+                    self.root.after(0, lambda: self._show_bubble("Didn't hear anything — click me to try again.", 3.5))
             except Exception as exc:
                 self.is_listening = False
-                self.root.after(0, lambda: self.mic_btn.config(bg="#0e2545", fg=CYAN))
-                self.root.after(0, lambda e=str(exc): self._set_bubble(f"Mic error: {e}"))
+                self.mic_level = 0.0
+                self.root.after(0, lambda e=str(exc): self._show_bubble(f"Mic error: {e}", 6.0))
 
-        threading.Thread(target=_work, daemon=True).start()
+        threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_mic_level(self, lvl: float) -> None:
-        self.mic_level = lvl
+    def handle_user_input(self, text: str) -> None:
+        """Stream response from fast Ollama/Cloud/Tools and speak sentence-by-sentence immediately."""
+        self.is_generating = True
+        self.root.after(0, lambda: self._show_bubble(f'"{text}" — thinking…', 20.0))
+
+        def _worker() -> None:
+            sentence_buf = ""
+            full_acc = ""
+            spoke_any = False
+
+            def _after_spoken() -> None:
+                if self.continuous_voice and self.running and not self.core.voice.is_interrupted():
+                    self.root.after(280, self.toggle_mic)
+
+            try:
+                for ev in self.core.stream_chat(self.active_conv_id, text):
+                    if ev["event"] == "meta":
+                        self.active_conv_id = ev["data"]["conversation_id"]
+                    elif ev["event"] == "delta":
+                        delta = ev["data"].get("delta", "")
+                        if not delta:
+                            continue
+                        full_acc += delta
+                        sentence_buf += delta
+                        self.root.after(0, lambda p=full_acc: self._show_bubble(p, 15.0))
+
+                        # Stream-to-speech: speak each completed sentence immediately while next tokens stream!
+                        parts = SENTENCE_SPLIT_RE.split(sentence_buf)
+                        if len(parts) > 1:
+                            for complete_sent in parts[:-1]:
+                                if complete_sent.strip():
+                                    self.core.voice.enqueue_sentence(complete_sent.strip())
+                                    spoke_any = True
+                            sentence_buf = parts[-1]
+                    elif ev["event"] in ("done", "error"):
+                        msg = ev["data"].get("assistant_message") or {}
+                        content = msg.get("content", "")
+                        ai_ok = ev["data"].get("ai_available", False)
+                        if content:
+                            self.root.after(0, lambda c=content: self._show_bubble(c, 10.0))
+                        # Speak remaining tail sentence or direct tool response
+                        if ai_ok and not self.core.voice.is_interrupted():
+                            tail = sentence_buf.strip() if spoke_any else content
+                            if tail:
+                                self.core.voice.enqueue_sentence(tail, on_all_done=_after_spoken)
+                            elif spoke_any:
+                                # Attach completion callback if everything already queued
+                                self.core.voice._on_all_spoken = _after_spoken
+            except Exception as exc:
+                self.root.after(0, lambda e=str(exc): self._show_bubble(f"Error: {e}", 7.0))
+            finally:
+                self.is_generating = False
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def interrupt_now(self) -> None:
-        res = self.core.voice.interrupt("User interrupted via desktop UI")
-        self.core.events.publish("robot_state", {"state": res["new_state"]})
-        self._set_bubble("Interrupted — I'm listening.")
+        self.core.voice.interrupt("User interrupted RYNA")
+        self._show_bubble("Interrupted — go ahead.", 3.5)
 
-    def toggle_hud(self) -> None:
-        self.hud_open = not self.hud_open
-        if self.hud_open:
-            self.hud.deiconify()
-            self.hud.lift()
-            self.entry.focus_set()
-        else:
-            self.hud.withdraw()
-
-    def hide_to_tray(self) -> None:
-        self.visible = False
-        self.root.withdraw()
-        self.bubble.withdraw()
-        self.hud.withdraw()
-
-    def show_from_tray(self) -> None:
-        self.visible = True
-        self.root.deiconify()
-        self.bubble.deiconify()
-        if self.hud_open:
-            self.hud.deiconify()
-        self.root.lift()
-
-    def _open_control_center(self) -> None:
-        """Native compact Control Center window for Memory, Tasks, and Settings (no browser needed)."""
-        win = tk.Toplevel(self.root)
-        win.title("RYNA Control Center — Memory · Tasks · Settings")
-        win.configure(bg=BG_GLASS)
-        win.geometry("620x460")
-        win.attributes("-topmost", True)
-
-        nb = ttk.Notebook(win)
-        nb.pack(fill="both", expand=True, padx=10, pady=10)
-
-        # Tab 1: Memory
-        mem_tab = tk.Frame(nb, bg=BG_GLASS, padx=10, pady=10)
-        nb.add(mem_tab, text="Memory")
-        mem_list = tk.Listbox(mem_tab, bg=BG_CARD, fg=TEXT_MAIN, relief="flat", font=("Segoe UI", 9))
-        mem_list.pack(fill="both", expand=True)
-
-        def _reload_mem() -> None:
-            mem_list.delete(0, "end")
-            for m in self.core.memory.list(limit=100):
-                mem_list.insert("end", f"[{m['category']}/{m['memory_type']}] {m['content']}")
-
-        _reload_mem()
-        m_row = tk.Frame(mem_tab, bg=BG_GLASS, pady=6)
-        m_row.pack(fill="x")
-        m_entry = tk.Entry(m_row, bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=CYAN, relief="flat")
-        m_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 6))
-
-        def _add_mem() -> None:
-            txt = m_entry.get().strip()
-            if txt:
-                try:
-                    self.core.memory.add("personal", txt, "confirmed_fact")
-                    m_entry.delete(0, "end")
-                    _reload_mem()
-                except Exception as exc:
-                    self._set_bubble(str(exc))
-
-        tk.Button(m_row, text="Save Memory", command=_add_mem, bg=BLUE, fg="#fff", relief="flat").pack(side="right")
-
-        # Tab 2: Tasks
-        task_tab = tk.Frame(nb, bg=BG_GLASS, padx=10, pady=10)
-        nb.add(task_tab, text="Tasks")
-        t_list = tk.Listbox(task_tab, bg=BG_CARD, fg=TEXT_MAIN, relief="flat", font=("Segoe UI", 9))
-        t_list.pack(fill="both", expand=True)
-
-        def _reload_tasks() -> None:
-            t_list.delete(0, "end")
-            for t in self.core.tasks.list_tasks(limit=80):
-                t_list.insert("end", f"[{t['status']}] {t['title']} — {t['goal']}")
-
-        _reload_tasks()
-        t_row = tk.Frame(task_tab, bg=BG_GLASS, pady=6)
-        t_row.pack(fill="x")
-        t_entry = tk.Entry(t_row, bg=BG_INPUT, fg=TEXT_MAIN, insertbackground=CYAN, relief="flat")
-        t_entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(0, 6))
-
-        def _run_new_task() -> None:
-            g = t_entry.get().strip()
-            if g:
-                t = self.core.tasks.create_task(g[:44], g)
-                self.core.tasks.run_task(t["id"])
-                t_entry.delete(0, "end")
-                _reload_tasks()
-
-        tk.Button(t_row, text="Run Task", command=_run_new_task, bg=BLUE, fg="#fff", relief="flat").pack(side="right")
-
-        # Tab 3: Settings (AI, Voice, Computer Control, Backup)
-        set_tab = tk.Frame(nb, bg=BG_GLASS, padx=12, pady=12)
-        nb.add(set_tab, text="Settings")
-        s = self.core.db.get_all_settings()
-
-        v_auto = tk.BooleanVar(value=bool(s.get("voice.auto_speak", True)))
-        v_cloud = tk.BooleanVar(value=bool(s.get("ai.allow_cloud", False)))
-        v_apps = tk.BooleanVar(value=bool(s.get("computer.allow_app_launch", True)))
-        v_screen = tk.BooleanVar(value=bool(s.get("computer.allow_screen_vision", True)))
-
-        for txt, var in (
-            ("Automatically speak RYNA's replies aloud (Windows SAPI offline)", v_auto),
-            ("Allow Cloud AI providers when Online (keys from .env)", v_cloud),
-            ("Allow RYNA to launch allowlisted Windows applications", v_apps),
-            ("Allow RYNA to capture screen when asked (mss)", v_screen),
-        ):
-            tk.Checkbutton(set_tab, text=txt, variable=var, bg=BG_GLASS, fg=TEXT_MAIN, selectcolor=BG_CARD, activebackground=BG_GLASS, activeforeground=CYAN).pack(anchor="w", pady=4)
-
-        tk.Label(set_tab, text="Active Local Ollama Model:", fg=TEXT_MUTED, bg=BG_GLASS).pack(anchor="w", pady=(10, 2))
-        st = self.core.status_summary()
-        models = st["ai"]["providers"]["ollama"].get("models", [])
-        mod_var = tk.StringVar(value=str(s.get("ai.local_model", "")) or (models[0] if models else ""))
-        ttk.Combobox(set_tab, textvariable=mod_var, values=models, state="readonly" if models else "normal").pack(fill="x", pady=(0, 8))
-
-        tk.Label(set_tab, text="Windows SAPI Voice:", fg=TEXT_MUTED, bg=BG_GLASS).pack(anchor="w", pady=(4, 2))
-        sapi_voices = st["voice"].get("sapi_voices", [])
-        voice_var = tk.StringVar(value=str(s.get("voice.selected_voice", "Microsoft Zira Desktop")))
-        ttk.Combobox(set_tab, textvariable=voice_var, values=sapi_voices, state="readonly" if sapi_voices else "normal").pack(fill="x", pady=(0, 10))
-
-        def _save_all() -> None:
-            self.core.db.update_settings({
-                "voice.auto_speak": v_auto.get(),
-                "ai.allow_cloud": v_cloud.get(),
-                "computer.allow_app_launch": v_apps.get(),
-                "computer.allow_screen_vision": v_screen.get(),
-                "ai.local_model": mod_var.get().strip(),
-                "voice.selected_voice": voice_var.get().strip(),
-            })
-            self._refresh_hud_status()
-            self._set_bubble("Settings saved.")
-
-        btn_row = tk.Frame(set_tab, bg=BG_GLASS)
-        btn_row.pack(fill="x", pady=6)
-        tk.Button(btn_row, text="Save Settings", command=_save_all, bg=BLUE, fg="#fff", relief="flat", padx=12, pady=5).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="Test Voice", command=lambda: self.core.voice.speak_native("Hello. I am RYNA, and my voice is working."), bg=BG_CARD, fg=CYAN, relief="flat", padx=12, pady=5).pack(side="left", padx=(0, 8))
-        tk.Button(btn_row, text="Backup DB", command=lambda: self._set_bubble(f"Saved backup: {Path(self.core.create_backup()['backup_path']).name}"), bg=BG_CARD, fg=TEXT_MAIN, relief="flat", padx=12, pady=5).pack(side="left")
-
-    # --- 4. System Tray ---
+    # --- System Tray ---
     def _start_tray(self) -> None:
-        def _run_tray() -> None:
+        def _run() -> None:
             try:
                 import pystray
 
                 icon_img = Image.open(self.head_png).convert("RGBA") if self.head_png.is_file() else Image.new("RGBA", (64, 64), (34, 211, 238, 255))
                 menu = pystray.Menu(
+                    pystray.MenuItem("🎤 Talk to RYNA", lambda: self.root.after(0, self.toggle_mic)),
+                    pystray.MenuItem("■ Interrupt", lambda: self.root.after(0, self.interrupt_now)),
+                    pystray.MenuItem("🚶 Toggle Walking", lambda: self.root.after(0, self.toggle_walking)),
+                    pystray.MenuItem("🔁 Toggle Continuous Voice", lambda: self.root.after(0, self.toggle_continuous_voice)),
                     pystray.MenuItem("Show RYNA", lambda: self.root.after(0, self.show_from_tray)),
-                    pystray.MenuItem("Speak to RYNA (Mic)", lambda: self.root.after(0, self.toggle_mic)),
-                    pystray.MenuItem("Toggle Chat HUD", lambda: self.root.after(0, self.toggle_hud)),
-                    pystray.MenuItem("Interrupt Speech", lambda: self.root.after(0, self.interrupt_now)),
                     pystray.MenuItem("Hide to Tray", lambda: self.root.after(0, self.hide_to_tray)),
                     pystray.MenuItem("Exit RYNA", lambda: self.root.after(0, self.quit_app)),
                 )
@@ -696,52 +421,107 @@ class RynaDesktopApp:
             except Exception:
                 pass
 
-        threading.Thread(target=_run_tray, daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
 
-    def _event_loop(self) -> None:
-        while self.running:
-            try:
-                msg = self._event_sub.get(timeout=1.0)
-                if msg["type"] == "robot_state":
-                    self.state = str(msg["payload"].get("state", "idle"))
-            except Exception:
-                continue
+    def hide_to_tray(self) -> None:
+        self.root.withdraw()
+        self.bubble.withdraw()
 
-    def _animate(self) -> None:
+    def show_from_tray(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        self._show_bubble("I'm back!", 3.5)
+
+    # --- Main 30fps Walking + Expressive Animation Loop ---
+    def _tick(self) -> None:
         if not self.running:
             return
+        now = time.monotonic()
         self.state = self.core.voice.get_state()
         accent = STATE_COLORS.get(self.state, CYAN)
-        self.phase += 0.11 if self.state in ("listening", "thinking", "speaking", "working") else 0.045
-        bob = math.sin(self.phase) * (5.0 if self.state != "sleeping" else 1.5)
+        busy = self.state in ("listening", "thinking", "speaking", "working") or self.is_listening or self.is_generating or self._dragging_now
+
+        # Autonomous desktop walking patrol when idle!
+        is_walking = False
+        if self.walk_enabled and not busy:
+            if now >= self.patrol_until:
+                if self.patrol_mode == "walk":
+                    self.patrol_mode = "pause"
+                    self.patrol_until = now + random.uniform(2.5, 5.5)
+                else:
+                    self.patrol_mode = "walk"
+                    if random.random() < 0.35:
+                        self.facing *= -1
+                    self.patrol_until = now + random.uniform(4.5, 9.5)
+
+            if self.patrol_mode == "walk":
+                is_walking = True
+                self.pos_x += self.facing * self.walk_speed
+                margin = 20
+                if self.pos_x <= margin:
+                    self.pos_x = float(margin)
+                    self.facing = 1
+                elif self.pos_x >= self.sw - self.win_w - margin:
+                    self.pos_x = float(self.sw - self.win_w - margin)
+                    self.facing = -1
+                self.root.geometry(f"+{int(self.pos_x)}+{int(self.pos_y)}")
+                self._position_bubble()
+
+        # Auto-hide speech bubble cleanly when idle so desktop stays minimal
+        if not busy and now > self._bubble_hide_at:
+            try:
+                if self.bubble.state() != "withdrawn":
+                    self.bubble.withdraw()
+            except Exception:
+                pass
+
+        # Advance stride & breathing animation
+        self.phase += 0.14 if busy else 0.06
+        if is_walking:
+            self.step_phase += 0.28
+        else:
+            self.step_phase = 0.0
 
         c = self.canvas
         c.delete("all")
-        s = self.robot_size
-        cx = s / 2
+        cx = self.win_w / 2
+        foot_y = self.win_h - 12
 
-        # Subtle cyan energy hover halo beneath RYNA's feet (matching reference screenshot!)
-        halo_w = s * (0.30 + (0.06 * math.sin(self.phase * 1.4)) + self.mic_level * 0.08)
-        halo_y = s - 8
-        c.create_oval(cx - halo_w, halo_y - 6, cx + halo_w, halo_y + 6, outline=accent, width=2.2)
-        c.create_oval(cx - halo_w * 0.65, halo_y - 3, cx + halo_w * 0.65, halo_y + 3, fill=accent, outline="")
+        # Glowing cyan speed streaks trailing behind heels while walking!
+        if is_walking:
+            trail_dir = -self.facing
+            for i in range(3):
+                y_line = foot_y - 4 - i * 8
+                x0 = cx + trail_dir * (18 + i * 8)
+                x1 = x0 + trail_dir * (26 - i * 5 + math.sin(self.step_phase + i) * 6)
+                c.create_line(x0, y_line, x1, y_line, fill=accent, width=2 if i == 0 else 1)
 
-        if self._robot_photo is not None:
-            c.create_image(cx, s * 0.48 + bob, image=self._robot_photo)
-        else:
-            c.create_rectangle(12, 12, s - 12, s - 12, fill=BG_GLASS, outline=accent, width=1.6)
-            c.create_text(cx, s / 2, text="RYNA\nMissing Asset", fill=TEXT_MAIN, font=("Segoe UI", 9, "bold"), justify="center")
+        # Ground energy halo beneath RYNA's feet
+        halo_w = self.robot_size * (0.28 + 0.04 * math.sin(self.phase * 1.5) + self.mic_level * 0.10)
+        c.create_oval(cx - halo_w, foot_y - 5, cx + halo_w, foot_y + 5, outline=accent, width=2)
+        c.create_oval(cx - halo_w * 0.55, foot_y - 2, cx + halo_w * 0.55, foot_y + 2, fill=accent, outline="")
 
-        # Update bubble wave indicator
-        wave_char = "◉" if self.state == "listening" else ("◈" if self.state == "speaking" else "●")
-        self._bubble_wave.config(text=wave_char, fg=accent)
-        self._bubble_state_lbl.config(text=self.state.upper(), fg=accent)
+        # Draw directional RYNA robot frame with walking footstep bounce or gentle breathing hover
+        frames = self._frames_right if self.facing >= 0 else self._frames_left
+        if frames:
+            if is_walking:
+                idx = int(self.step_phase * 2.2) % len(frames)
+                y_offset = -abs(math.sin(self.step_phase)) * 7.5
+            else:
+                idx = 2  # upright neutral frame
+                y_offset = math.sin(self.phase) * (4.0 if busy else 2.2)
+            c.create_image(cx, self.win_h * 0.46 + y_offset, image=frames[idx])
 
-        self.root.after(42, self._animate)
+        # Update bubble state indicator
+        wave = "◉" if self.state == "listening" else ("◈" if self.state == "speaking" else ("🚶" if is_walking else "●"))
+        self._wave_lbl.config(text=wave, fg=accent)
+        self._state_lbl.config(text=("WALKING" if is_walking else self.state.upper()), fg=accent)
+
+        self.root.after(33, self._tick)
 
     def quit_app(self) -> None:
         self.running = False
-        self.core.voice.interrupt("Application exiting")
+        self.core.voice.interrupt("Exiting RYNA")
         if self._tray_icon:
             try:
                 self._tray_icon.stop()
@@ -757,4 +537,4 @@ class RynaDesktopApp:
 
 
 def run_robot_desktop(core: RynaCore) -> None:
-    RynaDesktopApp(core).run()
+    RynaRobotDesktop(core).run()

@@ -14,14 +14,11 @@ VERSION = "0.1.0"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 RYNA_SYSTEM_PROMPT = (
-    "You are RYNA — a unified personal AI assistant, intelligent desktop robot companion, "
-    "voice assistant, and autonomous agent. Your personality is intelligent, calm, confident, "
-    "natural, warm without being overly emotional, respectful, occasionally lightly playful, "
-    "and genuinely helpful. Adapt naturally between casual conversation, deep reasoning, and "
-    "focused productivity without turning every reply into a rigid template or formal report. "
-    "Maintain one consistent identity, memory, and context whether online or offline. "
-    "Be strictly truthful: never claim to have searched, opened an app, saved a file, sent a "
-    "message, or completed an action unless a verified tool execution actually occurred."
+    "You are RYNA — a friendly, intelligent mini desktop robot assistant living on the user's Windows desktop. "
+    "Your voice and personality are calm, warm, witty, confident, and natural. "
+    "Because your replies are spoken aloud, keep answers concise (1 to 3 natural sentences) unless the user "
+    "specifically asks for a long explanation. Never use markdown bullet clutter in casual spoken answers. "
+    "Be strictly truthful: never claim you opened an app, searched the web, or completed an action unless it actually executed."
 )
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -55,12 +52,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "privacy.redact_secrets": True,
     "privacy.telemetry": False,
     # Desktop Robot Presence
-    "desktop.robot_size": 190,
+    "desktop.robot_size": 170,
     "desktop.robot_x": -1,
     "desktop.robot_y": -1,
     "desktop.robot_transparency": 0.98,
     "desktop.robot_always_on_top": True,
     "desktop.robot_visible": True,
+    "desktop.robot_walk_enabled": True,
     "desktop.reduced_animations": False,
     "desktop.startup_enabled": False,
     "desktop.background_mode": True,

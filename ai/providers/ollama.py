@@ -1,4 +1,4 @@
-"""Real local Ollama provider with native token streaming and model discovery."""
+"""Fast local Ollama provider with low-latency model preference, RAM keep-alive, and token streaming."""
 
 from __future__ import annotations
 
@@ -9,6 +9,28 @@ import urllib.request
 from typing import Any, Callable, Iterator
 
 from .base import AIProvider, AIResponse, ChatMessage, ProviderError, ProviderStatus
+
+# Prefer fast, low-latency non-thinking local models first for snappy voice interaction
+FAST_MODEL_PREFERENCE = (
+    "llama3.2:1b",
+    "qwen2.5:1.5b",
+    "gemma2:2b",
+    "phi3:mini",
+    "qwen2.5:3b",
+    "llama3.2:3b",
+)
+
+
+def pick_fastest_model(installed: list[str]) -> str:
+    if not installed:
+        return ""
+    lower_map = {m.lower(): m for m in installed}
+    for pref in FAST_MODEL_PREFERENCE:
+        if pref in lower_map:
+            return lower_map[pref]
+    # Avoid heavy thinking models as auto default if a lighter model exists
+    non_thinking = [m for m in installed if "qwen3" not in m.lower() and "r1" not in m.lower()]
+    return non_thinking[0] if non_thinking else installed[0]
 
 
 class OllamaProvider(AIProvider):
@@ -45,10 +67,10 @@ class OllamaProvider(AIProvider):
     def status(self) -> ProviderStatus:
         try:
             models = self.list_models(timeout=1.5)
-            chosen = self.default_model if self.default_model in models else (models[0] if models else self.default_model)
+            chosen = self.default_model if self.default_model in models else pick_fastest_model(models)
             if not models:
                 return ProviderStatus(self.name, True, True, False, [], chosen, "Ollama is running, but no models are pulled yet.")
-            return ProviderStatus(self.name, True, True, True, models, chosen, f"Local Ollama ready ({len(models)} model(s)).")
+            return ProviderStatus(self.name, True, True, True, models, chosen, f"Local Ollama ready ({chosen}).")
         except ProviderError as exc:
             return ProviderStatus(self.name, True, bool(self.base_url), False, [], self.default_model, str(exc))
 
@@ -58,17 +80,43 @@ class OllamaProvider(AIProvider):
             return target
         installed = self.list_models(timeout=3.0)
         if not installed:
-            raise ProviderError(self.name, "No local Ollama model installed. Run e.g. 'ollama pull qwen2.5:3b'.")
-        return installed[0]
+            raise ProviderError(self.name, "No local Ollama model installed. Run e.g. 'ollama pull qwen2.5:1.5b'.")
+        return pick_fastest_model(installed)
+
+    def warm_up(self, model: str | None = None) -> str:
+        """Pre-load the fast local model into RAM so first voice reply has near-zero cold-start lag."""
+        target = self._resolve_model(model)
+        try:
+            self._http_json(
+                "/api/chat",
+                {"model": target, "messages": [], "keep_alive": "30m", "stream": False},
+                timeout=30.0,
+            )
+        except Exception:
+            pass
+        return target
+
+    def _build_payload(self, target: str, messages: list[ChatMessage], stream: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": target,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "stream": stream,
+            "keep_alive": "30m",
+            "options": {
+                "num_ctx": 2048,
+                "num_predict": 180,
+                "temperature": 0.6,
+            },
+        }
+        # Disable slow hidden chain-of-thought on thinking models like qwen3.5 for snappy spoken dialogue
+        if "qwen3" in target.lower():
+            payload["think"] = False
+        return payload
 
     def chat(self, messages: list[ChatMessage], model: str | None = None, timeout: float = 120.0) -> AIResponse:
         target = self._resolve_model(model)
         t0 = time.perf_counter()
-        data = self._http_json(
-            "/api/chat",
-            {"model": target, "messages": [{"role": m.role, "content": m.content} for m in messages], "stream": False},
-            timeout=timeout,
-        )
+        data = self._http_json("/api/chat", self._build_payload(target, messages, stream=False), timeout=timeout)
         content = str(data.get("message", {}).get("content", "")).strip()
         if not content:
             raise ProviderError(self.name, "Ollama returned an empty response.")
@@ -92,7 +140,7 @@ class OllamaProvider(AIProvider):
         t0 = time.perf_counter()
         req = urllib.request.Request(
             f"{self.base_url}/api/chat",
-            data=json.dumps({"model": target, "messages": [{"role": m.role, "content": m.content} for m in messages], "stream": True}).encode("utf-8"),
+            data=json.dumps(self._build_payload(target, messages, stream=True)).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )

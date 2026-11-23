@@ -54,9 +54,9 @@ class NativeSpeechRecognizer:
     def listen_once(
         self,
         on_level: Callable[[float], None] | None = None,
-        max_seconds: float = 12.0,
-        silence_seconds: float = 1.15,
-        energy_threshold: float = 0.014,
+        max_seconds: float = 10.0,
+        silence_seconds: float = 0.65,
+        energy_threshold: float = 0.013,
         sample_rate: int = 16000,
     ) -> str:
         """Listen to real microphone until user finishes speaking, then transcribe locally."""
