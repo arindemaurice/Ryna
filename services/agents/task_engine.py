@@ -359,6 +359,24 @@ class TaskEngine:
         self.db.log_action("task_cancel", 1, "cancelled", task_id, task_id=task_id)
         return self.get_task(task_id)  # type: ignore[return-value]
 
+    def retry_task(self, task_id: str, approved: bool = False) -> dict[str, Any]:
+        """Reset non-completed steps cleanly to pending and re-execute through permissions."""
+        task = self.get_task(task_id)
+        if not task:
+            raise KeyError(f"Task '{task_id}' not found.")
+        now = utc_now()
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE task_steps SET status = 'pending', output = '', updated_at = ? WHERE task_id = ? AND status != 'completed'",
+                (now, task_id),
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'pending', outcome_status = 'pending', error_message = '', updated_at = ? WHERE id = ?",
+                (now, task_id),
+            )
+        self.db.log_action("task_retry", 1, "retrying", task_id, task_id=task_id)
+        return self.run_task(task_id, approved=approved)
+
     def halt_all_active(self) -> int:
         now = utc_now()
         with self.db.transaction() as conn:

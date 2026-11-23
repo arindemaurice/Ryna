@@ -4,6 +4,29 @@ All notable changes to **RYNA** will be documented in this file.
 
 The format follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-11-23
+
+### Added
+- **Complete Futuristic Minimal UI Redesign (`assets/web/`)**:
+  - Deep obsidian/charcoal/graphite aesthetic with refined cyan/ice-blue/violet accents and minimal 5-destination navigation (`Home`, `Memory`, `Tasks`, `Activity`, `Settings`).
+  - Centralized reactive state store (`assets/web/store.js`) synchronized over real-time Server-Sent Events (`GET /api/v1/events/stream`).
+  - Event-driven integrated **RYNA Companion** canvas (`assets/web/companion.js`) supporting all 8 real states (`idle`, `listening`, `processing`, `speaking`, `executing`, `waiting`, `offline`, `error`) with live microphone radial waveform and speaking pulse synchronization.
+  - Draggable **Floating Companion Dock** connected to the exact same RYNA conversation and engine session.
+- **Real Token-by-Token Streaming AI (`POST /api/v1/chat/stream`)**:
+  - Added native streaming support to `OllamaProvider` and `OpenAICompatibleProvider` with automatic fallback and instant mid-stream cancellation (`Stop` / `Esc`).
+  - Added real **File Attachments** in the chat composer, plus per-message **Copy**, **Speak**, and **Retry** (`POST /api/v1/chat/retry`).
+- **Full End-to-End Voice Pipeline (`assets/web/voice.js` + `services/voice/pipeline.py`)**:
+  - Real microphone device enumeration and Web Audio API `AnalyserNode` live amplitude metering.
+  - Real speech-to-text transcription (`SpeechRecognition`), `"Hey Ryna"` wake-word mode, and continuous natural turn-taking.
+  - Dual TTS playback: Browser `SpeechSynthesis` (instant with word-boundary animation sync) AND **Windows Native Offline SAPI** (`POST /api/v1/voice/speak`, verified with Microsoft Zira & David voices).
+  - Instant barge-in interruption stopping browser TTS, terminating active Windows SAPI subprocesses, and aborting in-flight generation immediately.
+- **Real Operating Mode & Activity Feed**:
+  - Explicit 5-state live operating mode classification (`Online · Cloud AI`, `Online · Local AI`, `Offline · Local AI`, `Offline · Limited`, `AI Unavailable`).
+  - Real SQLite-backed `activity_events` table and `/api/v1/activity` endpoint recording actual AI requests, tool executions, voice events, file attachments, task updates, and errors (zero fake logs).
+  - Task retry endpoint (`POST /api/v1/tasks/{id}/retry`) and step progress indicators.
+- **Native Windows Companion Upgrade (`apps/windows_companion/companion_window.py`)**:
+  - Click-to-interact quick desktop prompt wired directly to the same SQLite conversation and Windows SAPI voice output.
+
 ## [0.1.0] - 2026-11-23
 
 ### Added

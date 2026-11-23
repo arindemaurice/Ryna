@@ -6,6 +6,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from typing import Any, Callable, Iterator
 
 from .base import AIProvider, AIResponse, ChatMessage, ProviderError, ProviderStatus
 
@@ -91,3 +92,71 @@ class OpenAICompatibleProvider(AIProvider):
             latency_ms=elapsed_ms,
             usage=dict(data.get("usage", {})),
         )
+
+    def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        model: str | None = None,
+        timeout: float = 120.0,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        if not self.api_key and not self.is_local:
+            raise ProviderError(self.name, "RYNA_OPENAI_API_KEY is not configured.")
+
+        target_model = (model or self.default_model).strip()
+        url = f"{self.base_url}/chat/completions"
+        payload = {
+            "model": target_model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "stream": True,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+        )
+        t0 = time.perf_counter()
+        chunks: list[str] = []
+        actual_model = target_model
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                for raw_line in resp:
+                    if should_cancel and should_cancel():
+                        return
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    data = json.loads(data_str)
+                    actual_model = str(data.get("model", actual_model))
+                    choices = data.get("choices", [])
+                    if choices:
+                        delta = str(choices[0].get("delta", {}).get("content", ""))
+                        if delta:
+                            chunks.append(delta)
+                            yield {"delta": delta, "provider": self.name, "model": actual_model}
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise ProviderError(self.name, f"OpenAI-compatible HTTP {exc.code}: {err_body}", retryable=exc.code >= 500) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise ProviderError(self.name, f"OpenAI-compatible request failed: {exc}", retryable=True) from exc
+
+        full_text = "".join(chunks).strip()
+        if not full_text:
+            raise ProviderError(self.name, "Provider stream returned empty content.")
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        yield {
+            "done": True,
+            "response": AIResponse(
+                content=full_text,
+                provider=self.name,
+                model=actual_model,
+                is_local=self.is_local,
+                latency_ms=elapsed_ms,
+                usage={},
+            ),
+        }

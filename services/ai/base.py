@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Callable, Iterator
 
 
 @dataclass
@@ -65,3 +65,20 @@ class AIProvider(ABC):
         timeout: float = 60.0,
     ) -> AIResponse:
         """Send a real chat completion request to the provider."""
+
+    def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        model: str | None = None,
+        timeout: float = 120.0,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield streaming delta dicts (`{"delta": str, ...}`) followed by final `{"done": True, "response": AIResponse}`.
+
+        Subclasses supporting native HTTP streaming override this method.
+        """
+        resp = self.chat(messages=messages, model=model, timeout=timeout)
+        if should_cancel and should_cancel():
+            return
+        yield {"delta": resp.content, "provider": resp.provider, "model": resp.model}
+        yield {"done": True, "response": resp}

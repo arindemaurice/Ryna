@@ -41,6 +41,19 @@ class _MockProviderHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b"simulated ollama error")
                 return
+            if payload.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.end_headers()
+                chunks = [
+                    {"model": payload.get("model", "qwen2.5:3b"), "message": {"role": "assistant", "content": "Hello "}, "done": False},
+                    {"model": payload.get("model", "qwen2.5:3b"), "message": {"role": "assistant", "content": "from stream!"}, "done": False},
+                    {"model": payload.get("model", "qwen2.5:3b"), "message": {"role": "assistant", "content": ""}, "done": True, "eval_count": 6},
+                ]
+                for c in chunks:
+                    self.wfile.write((json.dumps(c) + "\n").encode("utf-8"))
+                    self.wfile.flush()
+                return
             reply = {
                 "model": payload.get("model", "qwen2.5:3b"),
                 "message": {"role": "assistant", "content": "Real HTTP reply from mock local Ollama."},
@@ -140,6 +153,33 @@ class TestAIRouter(unittest.TestCase):
         with self.assertRaises(ProviderError) as ctx:
             self.router.chat([ChatMessage(role="user", content="My password is secret123")])
         self.assertIn("Sensitive content", str(ctx.exception))
+
+    def test_streaming_ollama_and_operating_modes(self) -> None:
+        self.online = False
+        self.db.update_settings({"ai.ollama_base_url": f"http://127.0.0.1:{self.mock_port}", "ai.local_model": "qwen2.5:3b"})
+        mode_off = self.router.operating_mode(online=False)
+        self.assertEqual(mode_off["mode_id"], "offline_local_ai")
+
+        deltas = []
+        final = None
+        for ev in self.router.chat_stream([ChatMessage(role="user", content="Stream test")], online_override=False):
+            if "delta" in ev:
+                deltas.append(ev["delta"])
+            if ev.get("done"):
+                final = ev["response"]
+        self.assertEqual("".join(deltas), "Hello from stream!")
+        self.assertIsNotNone(final)
+        self.assertEqual(final.content, "Hello from stream!")
+
+        mode_on_local = self.router.operating_mode(online=True)
+        self.assertEqual(mode_on_local["mode_id"], "online_local_ai")
+
+        self.db.update_settings({"ai.ollama_base_url": "http://127.0.0.1:1", "ai.allow_cloud": False})
+        self.assertEqual(self.router.operating_mode(online=False)["mode_id"], "offline_limited")
+        self.assertEqual(self.router.operating_mode(online=True)["mode_id"], "ai_unavailable")
+
+        self.db.update_settings({"ai.allow_cloud": True})
+        self.assertEqual(self.router.operating_mode(online=True)["mode_id"], "online_cloud_ai")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ and strict honesty (never simulates or fakes AI intelligence when no model is av
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from core.python.config import RynaConfig
 from core.python.database import RynaDatabase
@@ -187,3 +187,118 @@ class AIRouter:
             "router",
             f"No real AI provider is currently available. {detail}",
         )
+
+    def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        requested_provider: str | None = None,
+        requested_model: str | None = None,
+        online_override: bool | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream tokens from the highest-priority available provider with automatic fallback before first token."""
+        settings = self.db.get_all_settings()
+        is_online = self._check_online() if online_override is None else online_override
+        allow_cloud = bool(settings.get("ai.allow_cloud", False))
+        allow_sensitive_cloud = bool(settings.get("ai.send_sensitive_to_cloud", False))
+        preferred = requested_provider or str(settings.get("ai.preferred_provider", "auto"))
+        fallback = str(settings.get("ai.fallback_provider", "ollama"))
+
+        user_text = "\n".join(m.content for m in messages if m.role == "user")
+        sensitive = contains_sensitive_data(user_text)
+
+        providers = self.build_providers()
+        candidates = self._candidate_order(
+            preferred=preferred,
+            fallback=fallback,
+            allow_cloud=allow_cloud,
+            is_online=is_online,
+            sensitive=sensitive,
+            allow_sensitive_cloud=allow_sensitive_cloud,
+            providers=providers,
+        )
+
+        errors: list[str] = []
+        for name in candidates:
+            prov = providers[name]
+            st = prov.status()
+            if not st.configured or (prov.is_local and not st.available):
+                errors.append(f"{name}: {st.detail}")
+                continue
+            emitted_any = False
+            try:
+                model_override = requested_model if name == preferred else None
+                for chunk in prov.chat_stream(
+                    messages=messages,
+                    model=model_override,
+                    should_cancel=should_cancel,
+                ):
+                    emitted_any = True
+                    yield chunk
+                return
+            except ProviderError as exc:
+                errors.append(f"{name}: {exc}")
+                if emitted_any:
+                    raise
+                continue
+
+        if sensitive and not allow_sensitive_cloud and allow_cloud:
+            errors.append(
+                "Sensitive content was detected; cloud providers were skipped per privacy settings (ai.send_sensitive_to_cloud = false)."
+            )
+        elif not allow_cloud:
+            errors.append("Cloud AI is currently disabled (ai.allow_cloud = false).")
+        elif not is_online:
+            errors.append("System is currently offline; cloud providers are unavailable.")
+
+        detail = " | ".join(errors) if errors else "No AI providers are configured or reachable."
+        raise ProviderError("router", f"No real AI provider is currently available. {detail}")
+
+    def operating_mode(self, online: bool | None = None) -> dict[str, Any]:
+        """Classify exact real operating mode across the 5 UI states."""
+        st = self.provider_statuses(online=online)
+        is_online = bool(st["online"])
+        provs = st["providers"]
+        local_ok = bool(provs.get("ollama", {}).get("available"))
+        cloud_ok = any(
+            bool(p.get("available")) for k, p in provs.items() if k != "ollama"
+        )
+        preferred = str(st.get("preferred_provider", "auto"))
+
+        active_provider = ""
+        active_model = ""
+        if is_online and cloud_ok and (preferred in ("openai", "anthropic", "gemini") or not local_ok):
+            mode_id = "online_cloud_ai"
+            label = "Online · Cloud AI"
+            chosen_key = preferred if preferred in provs and provs[preferred]["available"] else next(
+                k for k, p in provs.items() if k != "ollama" and p["available"]
+            )
+            active_provider = chosen_key
+            active_model = provs[chosen_key].get("active_model", "")
+        elif is_online and local_ok:
+            mode_id = "online_local_ai"
+            label = "Online · Local AI"
+            active_provider = "ollama"
+            active_model = provs["ollama"].get("active_model", "")
+        elif not is_online and local_ok:
+            mode_id = "offline_local_ai"
+            label = "Offline · Local AI"
+            active_provider = "ollama"
+            active_model = provs["ollama"].get("active_model", "")
+        elif not is_online:
+            mode_id = "offline_limited"
+            label = "Offline · Limited"
+        else:
+            mode_id = "ai_unavailable"
+            label = "AI Unavailable"
+
+        return {
+            "mode_id": mode_id,
+            "label": label,
+            "online": is_online,
+            "local_ai_available": local_ok,
+            "cloud_ai_available": cloud_ok,
+            "active_provider": active_provider,
+            "active_model": active_model,
+            "status": st,
+        }

@@ -1,6 +1,6 @@
 # RYNA — Autonomous AI Assistant
 
-**Version:** `0.1.0`
+**Version:** `0.2.0`
 
 ## 1. Project Name
 **RYNA** — Personal AI Assistant, Expressive Desktop Companion, and Autonomous Task Agent.
@@ -15,17 +15,18 @@ Internet connectivity expands RYNA's intelligence and toolset, but never determi
 
 ## 4. Features
 
-### Working Today (v0.1.0)
-- **Unified Local Engine & SQLite WAL Database**: Persistent conversations, message history, settings, notes, memories, tasks, task steps, and permission audit log.
-- **Real AI Provider Abstraction & Router**: Supports local **Ollama** and cloud **OpenAI-compatible**, **Anthropic**, and **Gemini** APIs with configurable preferred/fallback routing, sensitive-prompt cloud guard, and honest status reporting (never generates fake AI responses).
-- **Hardware-Aware Recommendations**: Detects real OS, CPU cores, RAM, disk space, and connectivity, recommending appropriate local model tiers.
-- **Persistent Adaptive Memory Center**: Categorized memory (`personal`, `project`, `knowledge`, `activity`), epistemic labels (`confirmed_fact`, `user_preference`, `inference`, `temporary`, `outdated`), deduplication, search, edit, delete, JSON export, enable/pause controls, and automatic secret rejection.
-- **Three-Level Permission System & Emergency Stop**: Level 1 (Automatic), Level 2 (Confirmation Required), Level 3 (Restricted), live Emergency Stop, and persistent action audit history.
-- **Persistent Task Engine with Crash Recovery**: Tracks `pending`, `planning`, `running`, `waiting_for_approval`, `paused`, `failed`, `completed`, and `cancelled` states; safely recovers interrupted tasks after restart without blindly repeating external actions; pauses online-only steps when offline.
-- **Offline Local Tools**: AST-safe calculator (`/calc`), sandboxed workspace file search (`/find`), text file reader (`/read`), persistent local notes (`/note`), and real hardware/database diagnostics (`/diag`).
-- **Futuristic Dark Assistant UI**: Main Assistant chat, animated 8-state Companion stage, Task Center, Memory Center, and all 16 Settings categories (every implemented control persists to SQLite; planned features are clearly disabled and labeled).
-- **Native Animated Windows Desktop Companion**: Frameless, draggable, resizable, edge-aware, always-on-top Tkinter companion orb with 8 visual states synced live to the engine, plus Win32 single-instance mutex protection.
-- **Windows PowerShell Tooling**: Environment checker, setup, run, test, and HKCU user-login startup scripts.
+### Working Today (v0.2.0)
+- **Redesigned Futuristic Minimal Desktop UI**: Deep obsidian/charcoal interface (`assets/web/`) with 5 real functional pages (`Home`, `Memory`, `Tasks`, `Activity`, `Settings`), centralized reactive state (`store.js`), live Server-Sent Events sync (`/api/v1/events/stream`), and a draggable Floating Companion Dock sharing the exact same AI session.
+- **Real Token-by-Token Streaming AI**: Native HTTP streaming for **Ollama** (local offline models) and **OpenAI-compatible** providers via `POST /api/v1/chat/stream`, plus Anthropic & Gemini support, mid-stream cancellation (`Stop` / `Esc`), **File Attachments**, and per-message **Copy**, **Speak**, and **Retry**.
+- **Real End-to-End Voice Pipeline**:
+  - Live microphone activation with real Web Audio API waveform metering driving the Companion visualization.
+  - Real speech-to-text transcription (`SpeechRecognition` in Edge/Chrome), `"Hey Ryna"` wake-word mode, and continuous turn-taking.
+  - Dual Text-to-Speech: Browser `SpeechSynthesis` (instant with word-boundary companion sync) AND **Windows Native Offline SAPI** (`System.Speech` — works 100% offline with installed Windows voices like Microsoft Zira & David).
+  - Instant barge-in interruption stopping playback and generation immediately.
+- **Real 5-State Operating Mode Indicator**: Live distinction between `Online · Cloud AI`, `Online · Local AI`, `Offline · Local AI`, `Offline · Limited`, and `AI Unavailable`, plus honest audio/microphone diagnostics.
+- **Live Chronological Activity Feed**: SQLite-backed `/api/v1/activity` logging real AI requests, voice events, tool runs, file attachments, task transitions, memory changes, and errors (zero fake logs).
+- **Persistent Memory, 3-Tier Permissions & Crash-Safe Task Queue**: Categorized memory with secret rejection, Level 1/2/3 permissions, Emergency Stop, task step progress bars, task Retry, offline queueing, and restart recovery.
+- **Native Animated Windows Companion**: Click-to-interact Tkinter companion orb wired directly to the same local RYNA session and Windows SAPI speech, with Win32 single-instance mutex protection.
 
 ### Implemented Integration Boundaries (Awaiting Toolchain or Later Phase)
 - **Flutter Cross-Platform App (`apps/desktop`)**: Real Dart/Flutter codebase wired to `/api/v1/*` — ready to build once Flutter SDK + Visual Studio C++ Build Tools are installed.
@@ -183,12 +184,10 @@ See [docs/security/PERMISSIONS.md](docs/security/PERMISSIONS.md). RYNA enforces 
 - **Port 8765 already in use**: Run `scripts\run.ps1 -Port 8766 -OpenUI` or set `RYNA_PORT` in `.env`.
 - **Rust/Flutter skipped during tests**: Install Rust (`https://rustup.rs`) and Flutter (`https://docs.flutter.dev/get-started/install/windows`), then re-run `scripts\check_env.ps1`.
 
-## 22. Known Limitations (v0.1.0)
-- Flutter desktop app and Rust core supervisor are implemented in-repo but have not yet been compiled on this machine because Flutter SDK, Rust/Cargo, and Visual Studio C++ Build Tools are not currently installed.
-- Token-by-token streaming responses (SSE) are not yet enabled in the HTTP chat endpoint (requests return full real completions).
-- Live microphone capture, offline Whisper STT, Piper TTS, and wake-word audio loop are not yet wired (state machine and backend discovery are implemented).
-- Desktop GUI automation (mouse/keyboard/OCR/screen capture), rich document parsers (PDF/DOCX/XLSX/PPTX), web search/browser automation, and multi-device sync are planned for later phases and clearly marked as `Planned` in the UI.
-- Windows system tray icon integration requires an optional tray library or compiled Rust/Flutter binary in a future milestone.
+## 22. Known Limitations (v0.2.0)
+- **Offline Speech-to-Text (`faster-whisper`)**: Browser `SpeechRecognition` in Chromium/Edge works live today, but Chromium's built-in STT requires internet connectivity; install optional `faster-whisper` + `sounddevice` (declared in `pyproject.toml`) for a future fully offline STT bridge. Offline **Text-to-Speech** works 100% offline today via Windows native SAPI (`Settings → Voice → Windows Native SAPI`).
+- **Flutter & Rust Compilation**: `apps/desktop` (Flutter) and `core/rust` (Rust) are implemented and kept in sync with the `0.2.0` API, but require installing Flutter SDK, Rust/Cargo, and Visual Studio C++ Build Tools to compile native binaries.
+- **Phase 5+ Capabilities**: Screen capture/OCR, desktop GUI automation, binary PDF/DOCX/XLSX parsers, browser automation, LLM-driven autonomous tool planning, native Windows system tray icon, and multi-device sync are not yet implemented.
 
 ## 23. Roadmap
 1. **0.2.0**: Streaming AI responses (SSE), LLM-driven tool-calling agent loop, and Ollama model pull management.

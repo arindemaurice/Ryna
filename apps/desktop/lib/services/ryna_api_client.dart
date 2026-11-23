@@ -74,4 +74,18 @@ class RynaApiClient {
   Future<void> triggerEmergencyStop() async {
     await _request('POST', '/api/v1/emergency-stop', body: {});
   }
+
+  Future<List<Map<String, dynamic>>> fetchActivity({String? category}) async {
+    final qs = category != null && category.isNotEmpty ? '?category=$category' : '';
+    final data = await _request('GET', '/api/v1/activity$qs');
+    return List<Map<String, dynamic>>.from(data['events'] as List? ?? []);
+  }
+
+  Future<void> speakNative(String text) async {
+    await _request('POST', '/api/v1/voice/speak', body: {'text': text});
+  }
+
+  Future<void> interruptVoice() async {
+    await _request('POST', '/api/v1/voice/interrupt', body: {});
+  }
 }

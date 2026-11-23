@@ -43,7 +43,7 @@ class TestToolsVoiceAndSingleInstance(unittest.TestCase):
         self.assertTrue(len(st["backends"]) >= 5)
 
         self.voice.begin_generation("gen_1")
-        self.assertEqual(self.voice.get_state(), "thinking")
+        self.assertEqual(self.voice.get_state(), "processing")
         self.voice.set_state("speaking")
 
         self.db.set_setting("voice.enabled", True)

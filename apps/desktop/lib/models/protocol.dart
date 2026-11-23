@@ -1,6 +1,8 @@
 class RynaStatus {
   final String version;
   final bool online;
+  final String operatingModeLabel;
+  final String activeModel;
   final String companionState;
   final bool emergencyStopped;
   final bool anyAiAvailable;
@@ -10,6 +12,8 @@ class RynaStatus {
   const RynaStatus({
     required this.version,
     required this.online,
+    required this.operatingModeLabel,
+    required this.activeModel,
     required this.companionState,
     required this.emergencyStopped,
     required this.anyAiAvailable,
@@ -20,9 +24,12 @@ class RynaStatus {
   factory RynaStatus.fromJson(Map<String, dynamic> json) {
     final ai = (json['ai'] as Map<String, dynamic>?) ?? {};
     final hw = (json['hardware'] as Map<String, dynamic>?) ?? {};
+    final op = (json['operating_mode'] as Map<String, dynamic>?) ?? {};
     return RynaStatus(
-      version: (json['version'] ?? '0.1.0').toString(),
+      version: (json['version'] ?? '0.2.0').toString(),
       online: json['online'] == true,
+      operatingModeLabel: (op['label'] ?? (json['online'] == true ? 'Online' : 'Offline')).toString(),
+      activeModel: (op['active_model'] ?? '').toString(),
       companionState: (json['companion_state'] ?? 'idle').toString(),
       emergencyStopped: json['emergency_stopped'] == true,
       anyAiAvailable: ai['any_provider_available'] == true,

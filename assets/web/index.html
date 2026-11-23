@@ -3,200 +3,218 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RYNA 0.1.0 — Autonomous AI Assistant</title>
+  <title>RYNA — Autonomous AI Assistant</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="app-shell">
-    <!-- Left Navigation Rail -->
-    <aside class="nav-rail">
-      <div class="brand">
-        <div class="brand-orb" id="rail-orb"></div>
-        <div>
-          <div class="brand-name">RYNA</div>
-          <div class="brand-version" id="brand-version">v0.1.0</div>
+  <div class="ambient-glow" aria-hidden="true"></div>
+
+  <div class="app-shell" id="app-shell">
+    <!-- Minimal Left Navigation Rail -->
+    <aside class="nav-rail" aria-label="Primary Navigation">
+      <div class="brand" title="RYNA">
+        <div class="brand-mark" id="brand-mark">
+          <span class="brand-core"></span>
+        </div>
+        <div class="brand-meta">
+          <span class="brand-name">RYNA</span>
+          <span class="brand-ver" id="brand-ver">0.2.0</span>
         </div>
       </div>
 
-      <nav class="nav-links">
-        <button class="nav-btn active" data-view="assistant">Assistant</button>
-        <button class="nav-btn" data-view="companion">Companion</button>
-        <button class="nav-btn" data-view="tasks">Task Center</button>
-        <button class="nav-btn" data-view="memory">Memory Center</button>
-        <button class="nav-btn" data-view="settings">Settings</button>
+      <nav class="nav-list">
+        <button class="nav-item active" data-view="home" title="Home (Alt+1)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1V9.5L12 3z"/></svg>
+          <span>Home</span>
+        </button>
+        <button class="nav-item" data-view="memory" title="Memory (Alt+2)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2.5"/><path d="M8.5 4.8A9 9 0 0 0 4.8 8.5"/></svg>
+          <span>Memory</span>
+        </button>
+        <button class="nav-item" data-view="tasks" title="Tasks (Alt+3)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 10l2 2 4-4"/><path d="M8 15h8"/></svg>
+          <span>Tasks</span>
+        </button>
+        <button class="nav-item" data-view="activity" title="Activity (Alt+4)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg>
+          <span>Activity</span>
+        </button>
+        <button class="nav-item" data-view="settings" title="Settings (Alt+5)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>Settings</span>
+        </button>
       </nav>
 
       <div class="rail-footer">
-        <div class="status-pill" id="connectivity-pill">Checking...</div>
-        <div class="status-pill subtle" id="ai-provider-pill">AI: Checking...</div>
-        <button class="btn-danger full-width" id="btn-emergency-stop">Emergency Stop</button>
+        <button class="rail-action" id="btn-toggle-companion-dock" title="Toggle Floating Companion Mode">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="15" cy="15" r="3"/></svg>
+          <span>Companion</span>
+        </button>
+        <button class="rail-action danger" id="btn-emergency-stop" title="Emergency Stop — Halt tasks & audio">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span>Stop All</span>
+        </button>
       </div>
     </aside>
 
-    <!-- Main Content Workspace -->
-    <main class="workspace">
-      <!-- Top Bar -->
+    <!-- Primary Workspace -->
+    <main class="main-stage">
+      <!-- Subtle Minimal Top Header -->
       <header class="topbar">
-        <div class="topbar-title" id="topbar-title">Assistant</div>
-        <div class="topbar-meta">
-          <span class="chip" id="chip-companion-state">State: idle</span>
-          <span class="chip" id="chip-hardware">Hardware: detecting...</span>
-          <button class="btn-ghost" id="btn-refresh">Refresh</button>
+        <div class="topbar-left">
+          <h1 class="view-title" id="view-title">Home</h1>
+          <div class="mode-pill" id="operating-mode-pill" title="Live connectivity and AI routing status">
+            <span class="dot"></span>
+            <span id="operating-mode-text">Detecting status…</span>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="status-chip" id="voice-status-chip" title="Live microphone and speech engine status">
+            <span class="dot"></span>
+            <span id="voice-status-text">Audio: Checking…</span>
+          </div>
+          <div class="status-chip subtle" id="backend-health-chip" title="Local RYNA engine health">
+            <span class="dot ok"></span>
+            <span id="backend-health-text">Engine</span>
+          </div>
+          <button class="icon-btn" id="btn-toggle-history" title="Toggle Conversation History">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h10M4 18h14"/></svg>
+          </button>
         </div>
       </header>
 
       <!-- Emergency Stop Banner -->
-      <div class="alert-banner hidden" id="emergency-banner">
-        <span><strong>EMERGENCY STOP ACTIVE</strong> — All active tasks are paused and mutating actions are blocked.</span>
-        <button class="btn-secondary" id="btn-reset-emergency">Reset Emergency Stop</button>
+      <div class="system-banner danger hidden" id="emergency-banner" role="alert">
+        <div class="banner-body">
+          <strong>Emergency Stop Active</strong> — Active tasks are paused, speech is stopped, and mutating actions are blocked.
+        </div>
+        <button class="btn-secondary small" id="btn-reset-emergency">Resume Normal Operation</button>
       </div>
 
-      <!-- VIEW 1: MAIN ASSISTANT -->
-      <section class="view active" id="view-assistant">
-        <div class="assistant-layout">
-          <div class="conv-sidebar">
-            <div class="panel-header">
+      <!-- Real Voice / Backend Diagnostic Banner (shown only on real error or limitation) -->
+      <div class="system-banner warn hidden" id="diagnostic-banner" role="status">
+        <div class="banner-body" id="diagnostic-banner-text"></div>
+        <button class="icon-btn small" id="btn-dismiss-diagnostic" aria-label="Dismiss notice">✕</button>
+      </div>
+
+      <!-- ================= VIEW: HOME (COMPANION + CONVERSATION + VOICE) ================= -->
+      <section class="view active" id="view-home">
+        <div class="home-grid" id="home-grid">
+          <!-- Collapsible Conversation History Drawer -->
+          <aside class="history-drawer" id="history-drawer">
+            <div class="drawer-head">
               <span>Conversations</span>
-              <button class="btn-primary small" id="btn-new-conv">+ New</button>
+              <button class="btn-primary small" id="btn-new-conv" title="New Conversation (Ctrl+K)">+ New</button>
             </div>
             <div class="conv-list" id="conv-list"></div>
-          </div>
+          </aside>
 
-          <div class="chat-panel">
-            <div class="ai-status-banner hidden" id="ai-unavailable-banner">
-              <strong>AI Provider Unavailable:</strong>
-              <span id="ai-unavailable-reason">No local or cloud AI model is currently reachable.</span>
-              <span class="hint">Configure Ollama or Cloud AI in Settings, or use offline local tools: <code>/calc 12*8</code>, <code>/diag</code>, <code>/find README</code>, <code>/note ...</code>.</span>
-            </div>
-
-            <div class="chat-messages" id="chat-messages"></div>
-
-            <div class="chat-composer">
-              <div class="composer-tools">
-                <button class="chip-btn" data-insert="/diag ">/diag</button>
-                <button class="chip-btn" data-insert="/calc ">/calc</button>
-                <button class="chip-btn" data-insert="/find ">/find</button>
-                <button class="chip-btn" data-insert="/note ">/note</button>
-                <div class="spacer"></div>
-                <button class="btn-warn small" id="btn-interrupt" title="Interrupt active response or speech">Interrupt</button>
+          <!-- Integrated Companion + Chat Column -->
+          <div class="conversation-stage">
+            <!-- Integrated Companion Presence Bar -->
+            <div class="companion-presence" id="companion-presence">
+              <div class="companion-visual-wrap">
+                <canvas id="companion-canvas" width="160" height="160" aria-label="RYNA live state visualization"></canvas>
               </div>
-              <form id="chat-form" class="composer-row">
-                <textarea id="chat-input" rows="2" placeholder="Message RYNA (or run local tools like /diag, /calc 42*7)..."></textarea>
-                <button type="submit" class="btn-primary" id="btn-send">Send</button>
-              </form>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- VIEW 2: DESKTOP COMPANION -->
-      <section class="view" id="view-companion">
-        <div class="companion-grid">
-          <div class="card companion-stage">
-            <canvas id="companion-canvas" width="320" height="320"></canvas>
-            <div class="companion-caption" id="companion-caption">RYNA • IDLE</div>
-            <div class="state-buttons" id="companion-state-buttons"></div>
-          </div>
-          <div class="card">
-            <h3>Companion Controls</h3>
-            <p class="muted">Changes persist directly to SQLite and sync with the native Windows companion window when launched via <code>scripts/run.ps1 -Companion</code>.</p>
-            <div class="form-group">
-              <label>Companion Size (px): <span id="val-comp-size">170</span></label>
-              <input type="range" id="ctrl-comp-size" min="120" max="260" step="10" value="170" />
-            </div>
-            <div class="form-group">
-              <label>Transparency: <span id="val-comp-alpha">0.94</span></label>
-              <input type="range" id="ctrl-comp-alpha" min="0.5" max="1.0" step="0.02" value="0.94" />
-            </div>
-            <label class="toggle-row">
-              <input type="checkbox" id="ctrl-comp-topmost" />
-              <span>Always on top (native companion)</span>
-            </label>
-            <label class="toggle-row">
-              <input type="checkbox" id="ctrl-reduced-anim" />
-              <span>Reduced animations (low-resource mode)</span>
-            </label>
-            <div class="btn-row">
-              <button class="btn-primary" id="btn-save-companion">Save Companion Settings</button>
-              <button class="btn-warn" id="btn-companion-interrupt">Trigger Barge-In / Interrupt</button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- VIEW 3: TASK CENTER -->
-      <section class="view" id="view-tasks">
-        <div class="two-col">
-          <div class="card">
-            <h3>Create Persistent Task</h3>
-            <form id="task-form">
-              <div class="form-group">
-                <label for="task-title">Title</label>
-                <input id="task-title" type="text" placeholder="e.g., System Diagnostics Check" required />
-              </div>
-              <div class="form-group">
-                <label for="task-goal">Goal (supports local tools: <code>calc: ...</code>, <code>find files ...</code>, <code>note: ...</code>, <code>system diagnostics</code>)</label>
-                <textarea id="task-goal" rows="3" placeholder="Describe the task goal..." required></textarea>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="task-perm">Permission Level</label>
-                  <select id="task-perm">
-                    <option value="1">Level 1 — Automatic</option>
-                    <option value="2">Level 2 — Confirmation Required</option>
-                    <option value="3">Level 3 — Restricted</option>
-                  </select>
+              <div class="companion-info">
+                <div class="companion-state-row">
+                  <span class="companion-label">RYNA</span>
+                  <span class="state-badge" id="companion-state-badge">idle</span>
+                  <span class="model-tag" id="active-model-tag"></span>
                 </div>
-                <label class="toggle-row" style="margin-top:22px;">
-                  <input type="checkbox" id="task-internet" />
-                  <span>Requires Internet</span>
-                </label>
+                <p class="companion-subtext" id="companion-subtext">Ready when you are.</p>
+                <div class="live-transcript hidden" id="live-transcript"></div>
               </div>
-              <div class="btn-row">
-                <button type="submit" class="btn-primary">Create Task</button>
-                <button type="button" class="btn-secondary" id="btn-create-run-task">Create & Run</button>
+              <div class="companion-quick-actions">
+                <button class="btn-ghost small hidden" id="btn-header-interrupt">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                  <span>Interrupt</span>
+                </button>
+                <button class="btn-ghost small" id="btn-wake-toggle" title="Toggle 'Hey Ryna' wake-word listening">
+                  <span class="dot" id="wake-dot"></span>
+                  <span id="wake-btn-label">Wake Word Off</span>
+                </button>
+                <button class="icon-btn small" id="btn-compact-companion" title="Collapse/expand companion header">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
               </div>
-            </form>
-          </div>
-
-          <div class="card">
-            <div class="panel-header">
-              <h3>Tasks & Approvals</h3>
-              <select id="task-filter">
-                <option value="">All States</option>
-                <option value="pending">Pending</option>
-                <option value="running">Running</option>
-                <option value="waiting_for_approval">Waiting for Approval</option>
-                <option value="paused">Paused</option>
-                <option value="completed">Completed</option>
-                <option value="failed">Failed</option>
-                <option value="cancelled">Cancelled</option>
-              </select>
             </div>
-            <div id="task-list" class="item-list"></div>
+
+            <!-- Message Timeline -->
+            <div class="messages-viewport" id="messages-viewport" role="log" aria-live="polite"></div>
+
+            <!-- Composer & Real Input Controls -->
+            <div class="composer-shell">
+              <div class="attachment-bar hidden" id="attachment-bar"></div>
+
+              <div class="composer-box">
+                <input type="file" id="file-input" class="hidden" multiple accept=".txt,.md,.json,.csv,.py,.js,.ts,.dart,.rs,.html,.css,.xml,.yaml,.yml,.log,.ini,.toml" />
+
+                <button type="button" class="icon-btn" id="btn-attach" title="Attach local text/code file(s)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                </button>
+
+                <button type="button" class="icon-btn mic-btn" id="btn-mic" title="Speak to RYNA (Ctrl+M)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                </button>
+
+                <textarea
+                  id="chat-input"
+                  rows="1"
+                  placeholder="Ask RYNA anything, press the mic to speak, or use /diag, /calc, /find, /note…"
+                  aria-label="Message RYNA"
+                ></textarea>
+
+                <button type="button" class="btn-warn small hidden" id="btn-stop-gen" title="Stop response generation (Esc)">
+                  Stop
+                </button>
+
+                <button type="button" class="btn-warn small hidden" id="btn-interrupt-speech" title="Interrupt RYNA speaking (Esc)">
+                  Interrupt
+                </button>
+
+                <button type="button" class="btn-primary send-btn" id="btn-send" title="Send (Enter)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
+              </div>
+
+              <div class="composer-footer">
+                <div class="quick-tools">
+                  <button class="tool-chip" data-insert="/diag">/diag</button>
+                  <button class="tool-chip" data-insert="/calc ">/calc</button>
+                  <button class="tool-chip" data-insert="/find ">/find</button>
+                  <button class="tool-chip" data-insert="/note ">/note</button>
+                </div>
+                <div class="composer-hints">
+                  <span id="auto-speak-indicator">Voice replies: On</span>
+                  <span>·</span>
+                  <span>Enter to send · Shift+Enter newline · Esc interrupt</span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- VIEW 4: MEMORY CENTER -->
+      <!-- ================= VIEW: MEMORY ================= -->
       <section class="view" id="view-memory">
-        <div class="two-col">
-          <div class="card">
-            <h3>Store Persistent Memory</h3>
-            <p class="muted">Secrets (passwords, API keys, private keys) are automatically rejected from ordinary memory.</p>
-            <form id="memory-form">
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="mem-category">Category</label>
+        <div class="page-split">
+          <div class="surface-panel">
+            <h2>Add Memory</h2>
+            <p class="muted">Store confirmed facts, preferences, or project context. Passwords, tokens, and API keys are automatically blocked.</p>
+            <form id="memory-form" class="stack-form">
+              <div class="field-row">
+                <label class="field">
+                  <span>Category</span>
                   <select id="mem-category">
                     <option value="personal">Personal</option>
                     <option value="project">Project</option>
                     <option value="knowledge">Knowledge</option>
                     <option value="activity">Activity</option>
                   </select>
-                </div>
-                <div class="form-group">
-                  <label for="mem-type">Classification</label>
+                </label>
+                <label class="field">
+                  <span>Type</span>
                   <select id="mem-type">
                     <option value="confirmed_fact">Confirmed Fact</option>
                     <option value="user_preference">User Preference</option>
@@ -204,40 +222,40 @@
                     <option value="temporary">Temporary (7d)</option>
                     <option value="outdated">Outdated</option>
                   </select>
-                </div>
+                </label>
               </div>
-              <div class="form-group">
-                <label for="mem-content">Content</label>
-                <textarea id="mem-content" rows="3" placeholder="e.g., User prefers concise bullet-point technical summaries" required></textarea>
-              </div>
-              <div class="form-group">
-                <label for="mem-tags">Tags (comma-separated)</label>
-                <input id="mem-tags" type="text" placeholder="communication, style" />
-              </div>
-              <div id="mem-form-error" class="inline-error hidden"></div>
+              <label class="field">
+                <span>Content</span>
+                <textarea id="mem-content" rows="3" placeholder="e.g., Prefer concise technical explanations with concrete commands" required></textarea>
+              </label>
+              <label class="field">
+                <span>Tags (comma-separated)</span>
+                <input id="mem-tags" type="text" placeholder="preferences, workflow" />
+              </label>
+              <div class="inline-error hidden" id="mem-form-error"></div>
               <button type="submit" class="btn-primary">Save Memory</button>
             </form>
 
-            <hr class="divider" />
-            <h4>Memory Controls</h4>
-            <label class="toggle-row">
+            <div class="divider"></div>
+            <h3>Memory Controls</h3>
+            <label class="switch-row">
               <input type="checkbox" id="mem-ctrl-enabled" />
-              <span>Memory System Enabled</span>
+              <span>Enable Persistent Memory</span>
             </label>
-            <label class="toggle-row">
+            <label class="switch-row">
               <input type="checkbox" id="mem-ctrl-paused" />
               <span>Pause Automatic Learning</span>
             </label>
-            <div class="btn-row">
-              <button class="btn-secondary" id="btn-export-mem">Export JSON</button>
-              <button class="btn-danger" id="btn-clear-mem">Clear All Memory</button>
+            <div class="action-row">
+              <button class="btn-secondary small" id="btn-export-mem">Export JSON</button>
+              <button class="btn-danger small" id="btn-clear-mem">Clear All</button>
             </div>
           </div>
 
-          <div class="card">
-            <div class="panel-header">
-              <h3>Stored Memories</h3>
-              <div class="filter-bar">
+          <div class="surface-panel">
+            <div class="panel-head">
+              <h2>Saved Memories</h2>
+              <div class="filter-group">
                 <select id="mem-filter-cat">
                   <option value="">All Categories</option>
                   <option value="personal">Personal</option>
@@ -245,25 +263,127 @@
                   <option value="knowledge">Knowledge</option>
                   <option value="activity">Activity</option>
                 </select>
-                <input id="mem-search" type="search" placeholder="Search memories..." />
+                <input id="mem-search" type="search" placeholder="Search memory…" />
               </div>
             </div>
-            <div id="memory-list" class="item-list"></div>
+            <div class="record-list" id="memory-list"></div>
           </div>
         </div>
       </section>
 
-      <!-- VIEW 5: SETTINGS (ALL 16 CATEGORIES) -->
+      <!-- ================= VIEW: TASKS ================= -->
+      <section class="view" id="view-tasks">
+        <div class="page-split">
+          <div class="surface-panel">
+            <h2>Create Task</h2>
+            <p class="muted">Tasks persist in SQLite, respect the 3-tier permission model, and recover safely across restarts.</p>
+            <form id="task-form" class="stack-form">
+              <label class="field">
+                <span>Title</span>
+                <input id="task-title" type="text" placeholder="e.g., Workspace Diagnostics Audit" required />
+              </label>
+              <label class="field">
+                <span>Goal (local tools: <code>system diagnostics</code>, <code>calc: ...</code>, <code>find files ...</code>, <code>note: ...</code>)</span>
+                <textarea id="task-goal" rows="3" placeholder="Describe the task goal…" required></textarea>
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span>Permission Level</span>
+                  <select id="task-perm">
+                    <option value="1">Level 1 — Automatic</option>
+                    <option value="2">Level 2 — Confirmation Required</option>
+                    <option value="3">Level 3 — Restricted</option>
+                  </select>
+                </label>
+                <label class="switch-row" style="margin-top:24px;">
+                  <input type="checkbox" id="task-internet" />
+                  <span>Requires Internet</span>
+                </label>
+              </div>
+              <div class="action-row">
+                <button type="submit" class="btn-secondary">Create Pending</button>
+                <button type="button" class="btn-primary" id="btn-create-run-task">Create & Run</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="surface-panel">
+            <div class="panel-head">
+              <h2>Task Queue</h2>
+              <select id="task-filter">
+                <option value="">All States</option>
+                <option value="running">Active / Running</option>
+                <option value="pending">Pending</option>
+                <option value="waiting_for_approval">Waiting Confirmation</option>
+                <option value="paused">Paused / Recovered</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div class="record-list" id="task-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= VIEW: ACTIVITY (REAL EVENTS ONLY) ================= -->
+      <section class="view" id="view-activity">
+        <div class="surface-panel full-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Live Application Activity</h2>
+              <p class="muted">Chronological record of real AI requests, tool runs, voice interactions, file attachments, tasks, and errors.</p>
+            </div>
+            <div class="filter-group">
+              <select id="activity-filter">
+                <option value="">All Events</option>
+                <option value="ai">AI Requests</option>
+                <option value="voice">Voice Events</option>
+                <option value="tool">Tool Execution</option>
+                <option value="file">File Operations</option>
+                <option value="task">Tasks</option>
+                <option value="memory">Memory</option>
+                <option value="system">System</option>
+              </select>
+              <button class="btn-secondary small" id="btn-refresh-activity">Refresh</button>
+              <button class="btn-danger small" id="btn-clear-activity">Clear Log</button>
+            </div>
+          </div>
+          <div class="record-list" id="activity-list"></div>
+        </div>
+      </section>
+
+      <!-- ================= VIEW: SETTINGS ================= -->
       <section class="view" id="view-settings">
-        <div class="settings-layout">
-          <div class="settings-nav" id="settings-nav"></div>
-          <div class="card settings-body" id="settings-body"></div>
+        <div class="settings-grid">
+          <nav class="settings-sidebar" id="settings-nav" aria-label="Settings Categories"></nav>
+          <div class="surface-panel settings-content" id="settings-body"></div>
         </div>
       </section>
     </main>
   </div>
 
-  <div class="toast hidden" id="toast"></div>
-  <script src="/app.js"></script>
+  <!-- Floating Companion Dock Mode (connected to exact same RYNA state & session) -->
+  <div class="floating-dock hidden" id="floating-dock" role="dialog" aria-label="RYNA Floating Companion">
+    <div class="dock-header" id="dock-drag-handle">
+      <span class="dock-title">RYNA · <span id="dock-state-text">idle</span></span>
+      <div class="dock-controls">
+        <button class="icon-btn small" id="btn-dock-expand" title="Expand Full Interface">⤢</button>
+        <button class="icon-btn small" id="btn-dock-hide" title="Close Floating Dock">✕</button>
+      </div>
+    </div>
+    <div class="dock-body">
+      <canvas id="dock-canvas" width="144" height="144"></canvas>
+      <div class="dock-transcript" id="dock-transcript">Click mic or type below to interact with RYNA.</div>
+      <div class="dock-input-row">
+        <button class="icon-btn small" id="btn-dock-mic" title="Speak">🎤</button>
+        <input type="text" id="dock-input" placeholder="Ask RYNA…" />
+        <button class="btn-primary small" id="btn-dock-send">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

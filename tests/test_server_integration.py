@@ -59,7 +59,12 @@ class TestServerIntegration(unittest.TestCase):
     def test_web_ui_and_health_endpoints(self) -> None:
         code, html = self._req("GET", "/")
         self.assertEqual(code, 200)
-        self.assertIn("RYNA 0.1.0", html)
+        self.assertIn("RYNA", html)
+
+        for asset in ("/styles.css", "/store.js", "/companion.js", "/voice.js", "/app.js"):
+            acode, body = self._req("GET", asset)
+            self.assertEqual(acode, 200, f"Asset {asset} failed")
+            self.assertTrue(len(body) > 100)
 
         code, health = self._req("GET", "/api/v1/health")
         self.assertEqual(code, 200)
@@ -68,7 +73,51 @@ class TestServerIntegration(unittest.TestCase):
         code, status = self._req("GET", "/api/v1/status")
         self.assertEqual(code, 200)
         self.assertEqual(status["mode"], "offline")
+        self.assertEqual(status["operating_mode"]["id"], "offline_limited")
         self.assertFalse(status["ai"]["any_provider_available"])
+
+    def test_streaming_attachments_retry_activity_and_task_retry(self) -> None:
+        # 1. File attachment + streaming SSE endpoint (honest unavailable error when no AI configured)
+        req = urllib.request.Request(
+            f"{self.base}/api/v1/chat/stream",
+            data=json.dumps({
+                "message": "Summarize attached note",
+                "attachments": [{"name": "spec.txt", "size": 24, "mime": "text/plain", "content": "RYNA offline test file."}],
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            raw_sse = resp.read().decode("utf-8")
+        self.assertIn("event: meta", raw_sse)
+        self.assertIn("event: error", raw_sse)
+
+        # 2. Voice event & Activity feed recorded real events
+        code, _ = self._req("POST", "/api/v1/voice/event", {"event_type": "voice_listen", "summary": "Mic test", "state": "listening"})
+        self.assertEqual(code, 200)
+
+        code, act = self._req("GET", "/api/v1/activity")
+        self.assertEqual(code, 200)
+        types = {e["event_type"] for e in act["events"]}
+        self.assertIn("file_attach", types)
+        self.assertIn("voice_listen", types)
+        self.assertIn("ai_error", types)
+
+        # 3. Retry message endpoint works cleanly
+        code, convs = self._req("GET", "/api/v1/conversations")
+        conv_id = convs["conversations"][0]["id"]
+        code, retry_res = self._req("POST", "/api/v1/chat/retry", {"conversation_id": conv_id})
+        self.assertEqual(code, 200)
+        self.assertFalse(retry_res["ai_available"])
+
+        # 4. Task cancel + retry workflow
+        code, t_resp = self._req("POST", "/api/v1/tasks", {"title": "Retryable Calc", "goal": "calc: 6 * 7"})
+        tid = t_resp["task"]["id"]
+        code, cancelled = self._req("POST", f"/api/v1/tasks/{tid}/cancel", {})
+        self.assertEqual(cancelled["task"]["status"], "cancelled")
+        code, retried = self._req("POST", f"/api/v1/tasks/{tid}/retry", {})
+        self.assertEqual(retried["task"]["status"], "completed")
+        self.assertIn("42", retried["task"]["result_summary"])
 
     def test_chat_honest_unavailable_and_local_tool_command(self) -> None:
         code, res = self._req("POST", "/api/v1/chat", {"message": "Hello RYNA"})

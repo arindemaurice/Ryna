@@ -137,6 +137,18 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS activity_events (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'info',
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_category ON activity_events(category);
 """
 
 
@@ -326,6 +338,91 @@ class RynaDatabase:
                 result.append(item)
             return result
 
+    def delete_message(self, message_id: str) -> bool:
+        with self.transaction() as conn:
+            cur = conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+            return cur.rowcount > 0
+
+    def get_message(self, message_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, conversation_id, role, content, provider, model, mode, metadata_json, created_at
+                FROM messages WHERE id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            return item
+
+    # --- Activity Events (real application events only) ---
+
+    def record_activity(
+        self,
+        category: str,
+        event_type: str,
+        summary: str,
+        status: str = "ok",
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        event_id = new_id("evt")
+        now = utc_now()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO activity_events(id, category, event_type, summary, status, details_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (event_id, category, event_type, summary, status, json.dumps(details or {}), now),
+            )
+        return {
+            "id": event_id,
+            "category": category,
+            "event_type": event_type,
+            "summary": summary,
+            "status": status,
+            "details": details or {},
+            "created_at": now,
+        }
+
+    def list_activity(self, category: str | None = None, limit: int = 150) -> list[dict[str, Any]]:
+        with self._lock:
+            if category and category.strip():
+                rows = self._conn.execute(
+                    """
+                    SELECT id, category, event_type, summary, status, details_json, created_at
+                    FROM activity_events
+                    WHERE category = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (category.strip().lower(), limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, category, event_type, summary, status, details_json, created_at
+                    FROM activity_events
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["details"] = json.loads(d.pop("details_json") or "{}")
+                out.append(d)
+            return out
+
+    def clear_activity(self) -> int:
+        with self.transaction() as conn:
+            cur = conn.execute("DELETE FROM activity_events")
+            return cur.rowcount
+
     # --- Notes & Reminders ---
 
     def create_note(self, title: str, content: str, remind_at: str | None = None) -> dict[str, Any]:
@@ -417,5 +514,6 @@ class RynaDatabase:
                 "tasks": count("tasks"),
                 "notes": count("notes"),
                 "audit_entries": count("action_audit"),
+                "activity_events": count("activity_events"),
                 "db_size_bytes": self.db_path.stat().st_size if self.db_path.exists() else 0,
             }

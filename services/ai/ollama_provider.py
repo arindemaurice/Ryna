@@ -6,7 +6,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from .base import AIProvider, AIResponse, ChatMessage, ProviderError, ProviderStatus
 
@@ -121,3 +121,80 @@ class OllamaProvider(AIProvider):
                 "eval_count": data.get("eval_count", 0),
             },
         )
+
+    def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        model: str | None = None,
+        timeout: float = 180.0,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        target_model = (model or self.default_model).strip()
+        if not target_model:
+            installed = self.list_models(timeout=3.0)
+            if not installed:
+                raise ProviderError(
+                    self.name,
+                    "No local Ollama model configured or installed. Pull a model with 'ollama pull <model>'.",
+                )
+            target_model = installed[0]
+
+        t0 = time.perf_counter()
+        payload = {
+            "model": target_model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "stream": True,
+        }
+        url = f"{self.base_url}/api/chat"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        chunks: list[str] = []
+        usage: dict[str, Any] = {}
+        actual_model = target_model
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                for raw_line in resp:
+                    if should_cancel and should_cancel():
+                        return
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    actual_model = str(data.get("model", actual_model))
+                    msg = data.get("message", {})
+                    delta = str(msg.get("content", ""))
+                    if delta:
+                        chunks.append(delta)
+                        yield {"delta": delta, "provider": self.name, "model": actual_model}
+                    if data.get("done"):
+                        usage = {
+                            "prompt_eval_count": data.get("prompt_eval_count", 0),
+                            "eval_count": data.get("eval_count", 0),
+                        }
+                        break
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise ProviderError(self.name, f"Ollama HTTP {exc.code}: {err_body}", retryable=exc.code >= 500) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise ProviderError(self.name, f"Ollama unreachable at {self.base_url}: {exc}", retryable=True) from exc
+
+        full_text = "".join(chunks).strip()
+        if not full_text:
+            raise ProviderError(self.name, "Ollama stream completed with empty content.")
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        yield {
+            "done": True,
+            "response": AIResponse(
+                content=full_text,
+                provider=self.name,
+                model=actual_model,
+                is_local=True,
+                latency_ms=elapsed_ms,
+                usage=usage,
+            ),
+        }

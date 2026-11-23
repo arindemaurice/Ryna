@@ -1,14 +1,14 @@
 {
   "app": {
     "name": "RYNA",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "host": "127.0.0.1",
     "port": 8765,
     "log_level": "INFO"
   },
   "identity": {
     "name": "RYNA",
-    "system_prompt": "You are RYNA, a personal AI assistant, companion, and autonomous agent. You are intelligent, concise, honest, expressive, and helpful. Maintain consistent identity, memory, and task context whether online or offline. Never invent facts, tool results, or completed actions. Respect user permissions and privacy at all times."
+    "system_prompt": "You are RYNA — a personal AI assistant, intelligent companion, and autonomous desktop agent. Your tone is intelligent, calm, confident, natural, warm without being overly emotional, and occasionally lightly playful when appropriate. Be concise, clear, and genuinely helpful. Maintain a consistent identity, memory, and task context whether online or offline. Never invent facts, fabricate tool execution, or claim actions were completed when they were not. Always respect user permissions and privacy."
   },
   "hardware_model_tiers": [
     {
@@ -21,7 +21,7 @@
     {
       "tier": "medium",
       "max_ram_gb": 16,
-      "recommended_local_models": ["qwen2.5:7b", "llama3.2:3b", "mistral:7b"],
+      "recommended_local_models": ["qwen2.5:3b", "qwen3.5:4b", "qwen2.5:7b"],
       "max_context_tokens": 8192,
       "reduced_animations": false
     },
@@ -43,18 +43,22 @@
   "default_settings": {
     "general.assistant_name": "RYNA",
     "general.language": "en",
-    "appearance.theme": "midnight_cyan",
+    "appearance.theme": "obsidian_cyan",
     "appearance.companion_transparency": 0.94,
-    "appearance.companion_size": 170,
+    "appearance.companion_size": 176,
     "appearance.companion_always_on_top": true,
     "appearance.reduced_animations": false,
-    "voice.enabled": false,
+    "appearance.companion_compact": false,
+    "voice.enabled": true,
+    "voice.auto_speak": true,
     "voice.mode": "push_to_talk",
     "voice.wake_word": "Hey Ryna",
     "voice.sensitivity": 0.65,
     "voice.speech_speed": 1.0,
-    "voice.selected_voice": "system_default",
+    "voice.selected_voice": "Microsoft Zira Desktop",
+    "voice.tts_engine": "browser",
     "voice.microphone": "default",
+    "voice.speaker": "default",
     "ai.preferred_provider": "auto",
     "ai.fallback_provider": "ollama",
     "ai.allow_cloud": false,

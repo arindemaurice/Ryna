@@ -1,70 +1,24 @@
-/* RYNA 0.1.0 Frontend Controller — Zero Fake Data, Real Local Engine API */
+/**
+ * RYNA 0.2.0 Main Application Controller.
+ * Connects Home (Companion + Streaming Conversation + Voice + Attachments),
+ * Memory, Tasks, Activity, Settings, and Floating Companion Dock to the real local engine.
+ */
 
-const state = {
-  status: null,
-  settings: {},
-  conversations: [],
-  activeConvId: null,
-  messages: [],
-  tasks: [],
-  memories: [],
-  activeSettingsCat: "general",
-  companionState: "idle",
-  animPhase: 0,
-};
+import { CompanionRenderer } from "./companion.js";
+import { RynaStore, apiRequest } from "./store.js";
+import { VoiceController } from "./voice.js";
 
-const SETTINGS_CATEGORIES = [
-  { id: "general", label: "General" },
-  { id: "appearance", label: "Appearance" },
-  { id: "voice", label: "Voice" },
-  { id: "ai_models", label: "AI Models" },
-  { id: "offline_ai", label: "Offline AI" },
-  { id: "online_ai", label: "Online AI" },
-  { id: "memory", label: "Memory" },
-  { id: "privacy", label: "Privacy" },
-  { id: "permissions", label: "Permissions" },
-  { id: "computer_control", label: "Computer Control" },
-  { id: "notifications", label: "Notifications" },
-  { id: "devices", label: "Devices" },
-  { id: "storage", label: "Storage" },
-  { id: "startup", label: "Startup" },
-  { id: "diagnostics", label: "Diagnostics" },
-  { id: "updates", label: "Updates" },
-];
+const store = new RynaStore();
+const companion = new CompanionRenderer(store, ["companion-canvas", "dock-canvas"]);
+let activeAbortController = null;
+let eventSource = null;
 
-const COMPANION_STYLE = {
-  idle: { accent: "#22d3ee", ring: "#0ea5e9", speed: 0.03 },
-  listening: { accent: "#38bdf8", ring: "#06b6d4", speed: 0.09 },
-  thinking: { accent: "#818cf8", ring: "#38bdf8", speed: 0.12 },
-  speaking: { accent: "#2dd4bf", ring: "#22d3ee", speed: 0.15 },
-  working: { accent: "#60a5fa", ring: "#2563eb", speed: 0.11 },
-  waiting: { accent: "#fbbf24", ring: "#f59e0b", speed: 0.04 },
-  alert: { accent: "#fb7185", ring: "#ef4444", speed: 0.18 },
-  sleeping: { accent: "#64748b", ring: "#334155", speed: 0.015 },
-};
+const voice = new VoiceController(store, companion, (transcript, opts) => {
+  sendMessage(transcript, opts);
+});
 
-async function api(path, options = {}) {
-  const opts = { headers: { "Content-Type": "application/json" }, ...options };
-  if (opts.body && typeof opts.body !== "string") {
-    opts.body = JSON.stringify(opts.body);
-  }
-  const resp = await fetch(path, opts);
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) {
-    throw new Error(data.error || `HTTP ${resp.status}`);
-  }
-  return data;
-}
-
-function toast(msg) {
-  const el = document.getElementById("toast");
-  el.textContent = msg;
-  el.classList.remove("hidden");
-  clearTimeout(window.__rynaToastTimer);
-  window.__rynaToastTimer = setTimeout(() => el.classList.add("hidden"), 3000);
-}
-
-function escapeHtml(str) {
+/* ---------- Helpers ---------- */
+function esc(str) {
   return String(str ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -72,318 +26,159 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-/* ---------- Navigation ---------- */
-function switchView(viewId) {
-  document.querySelectorAll(".nav-btn").forEach((b) => {
-    b.classList.toggle("active", b.dataset.view === viewId);
-  });
-  document.querySelectorAll(".view").forEach((v) => {
-    v.classList.toggle("active", v.id === `view-${viewId}`);
-  });
-  const titles = {
-    assistant: "Assistant",
-    companion: "Desktop Companion",
-    tasks: "Task Center",
-    memory: "Memory Center",
-    settings: "Settings",
-  };
-  document.getElementById("topbar-title").textContent = titles[viewId] || "RYNA";
-  if (viewId === "tasks") loadTasks();
-  if (viewId === "memory") loadMemories();
-  if (viewId === "settings") renderSettingsCategory();
-}
-
-/* ---------- Global Status & Settings ---------- */
-async function refreshAll() {
+function formatTime(iso) {
+  if (!iso) return "";
   try {
-    const [st, setResp] = await Promise.all([api("/api/v1/status"), api("/api/v1/settings")]);
-    state.status = st;
-    state.settings = setResp.settings || {};
-    state.companionState = st.companion_state || "idle";
-
-    document.getElementById("brand-version").textContent = `v${st.version}`;
-    const connPill = document.getElementById("connectivity-pill");
-    connPill.textContent = st.online ? "Mode: Online" : "Mode: Offline (Local)";
-    connPill.className = `status-pill ${st.online ? "online" : "offline"}`;
-
-    const aiPill = document.getElementById("ai-provider-pill");
-    const availNames = Object.values(st.ai.providers || {})
-      .filter((p) => p.available)
-      .map((p) => `${p.name}${p.active_model ? ` (${p.active_model})` : ""}`);
-    aiPill.textContent = availNames.length ? `AI: ${availNames[0]}` : "AI: Not Configured";
-
-    document.getElementById("chip-companion-state").textContent = `State: ${state.companionState}`;
-    const hw = st.hardware || {};
-    document.getElementById("chip-hardware").textContent =
-      `RAM: ${hw.ram_total_gb || "?"} GB • Tier: ${hw.recommended_tier || "?"}`;
-
-    const banner = document.getElementById("emergency-banner");
-    banner.classList.toggle("hidden", !st.emergency_stopped);
-
-    const aiBanner = document.getElementById("ai-unavailable-banner");
-    aiBanner.classList.toggle("hidden", !!st.ai.any_provider_available);
-    if (!st.ai.any_provider_available) {
-      const ollamaDetail = st.ai.providers?.ollama?.detail || "No local or cloud provider reachable.";
-      document.getElementById("ai-unavailable-reason").textContent = ollamaDetail;
-    }
-
-    syncCompanionControls();
-    syncMemoryControls();
-    if (document.getElementById("view-settings").classList.contains("active")) {
-      renderSettingsCategory();
-    }
-  } catch (err) {
-    toast(`Status refresh failed: ${err.message}`);
+    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
   }
 }
 
-/* ---------- Conversations & Chat ---------- */
-async function loadConversations() {
-  const data = await api("/api/v1/conversations");
-  state.conversations = data.conversations || [];
-  if (!state.activeConvId && state.conversations.length > 0) {
-    state.activeConvId = state.conversations[0].id;
-  }
-  renderConversationList();
-  if (state.activeConvId) {
-    await loadMessages(state.activeConvId);
-  } else {
-    state.messages = [];
-    renderMessages();
-  }
-}
-
-function renderConversationList() {
-  const list = document.getElementById("conv-list");
-  if (!state.conversations.length) {
-    list.innerHTML = `<div class="muted" style="padding:8px;">No conversations yet. Start typing below or click + New.</div>`;
-    return;
-  }
-  list.innerHTML = state.conversations
-    .map(
-      (c) => `
-      <div class="conv-item ${c.id === state.activeConvId ? "active" : ""}" data-id="${c.id}">
-        <span class="conv-title">${escapeHtml(c.title)}</span>
-        <button class="conv-del" data-del="${c.id}" title="Delete conversation">✕</button>
-      </div>`
-    )
+function renderMarkdownLite(text) {
+  const raw = String(text ?? "");
+  const segments = raw.split(/(```[\s\S]*?```)/g);
+  return segments
+    .map((seg) => {
+      if (seg.startsWith("```") && seg.endsWith("```")) {
+        const inner = seg.slice(3, -3).replace(/^[a-zA-Z0-9_-]+\n/, "");
+        return `<pre><code>${esc(inner)}</code></pre>`;
+      }
+      return esc(seg)
+        .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\n/g, "<br>");
+    })
     .join("");
+}
+
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  clearTimeout(window.__rynaToast);
+  window.__rynaToast = setTimeout(() => el.classList.add("hidden"), 2800);
+}
+
+/* ---------- Live SSE Synchronization ---------- */
+function connectEventStream() {
+  if (eventSource) {
+    eventSource.close();
+  }
+  eventSource = new EventSource("/api/v1/events/stream");
+
+  eventSource.addEventListener("companion_state", (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      if (data.state && !store.state.voice.isListening) {
+        const labels = {
+          idle: "Ready when you are.",
+          listening: "Listening…",
+          processing: "Thinking…",
+          speaking: "Speaking…",
+          executing: "Executing local operation…",
+          waiting: "Waiting for your confirmation.",
+          offline: "Operating offline.",
+          error: "Attention needed — see notice.",
+        };
+        const patch = {
+          companionState: data.state,
+          companionSubtext: labels[data.state] || "Active.",
+        };
+        if (data.state === "idle" && store.state.voice.isSpeaking && store.state.settings["voice.tts_engine"] === "windows-sapi") {
+          store.setVoice({ isSpeaking: false });
+        }
+        store.set(patch);
+      }
+    } catch {
+      // ignore
+    }
+  });
+
+  eventSource.addEventListener("activity", (ev) => {
+    try {
+      const item = JSON.parse(ev.data);
+      const next = [item, ...store.state.activity].slice(0, 150);
+      store.set({ activity: next });
+      if (store.state.activeView === "activity") renderActivity();
+    } catch {
+      // ignore
+    }
+  });
+
+  eventSource.addEventListener("task_updated", () => {
+    if (store.state.activeView === "tasks") loadTasks();
+  });
+
+  eventSource.addEventListener("emergency_stop", (ev) => {
+    try {
+      const d = JSON.parse(ev.data);
+      store.set({ emergencyStopped: !!d.emergency_stopped });
+    } catch {
+      // ignore
+    }
+  });
+
+  eventSource.onerror = () => {
+    store.set({ backendHealthy: false });
+  };
+  eventSource.addEventListener("connected", () => {
+    store.set({ backendHealthy: true });
+  });
+}
+
+/* ---------- Backend Sync ---------- */
+async function refreshStatus() {
+  try {
+    const [st, setResp] = await Promise.all([apiRequest("/api/v1/status"), apiRequest("/api/v1/settings")]);
+    const op = st.operating_mode || {};
+    store.setVoice({ sapiVoices: st.voice?.sapi_voices || [] });
+
+    const nextCompanion =
+      store.state.voice.isListening
+        ? "listening"
+        : store.state.voice.isSpeaking
+        ? "speaking"
+        : store.state.isGenerating
+        ? "processing"
+        : st.companion_state || "idle";
+
+    store.set({
+      backendHealthy: true,
+      status: st,
+      settings: setResp.settings || {},
+      emergencyStopped: !!st.emergency_stopped,
+      operatingMode: op,
+      companionState: nextCompanion,
+    });
+    if (store.state.activeView === "settings") renderSettingsPanel();
+  } catch (err) {
+    store.set({
+      backendHealthy: false,
+      companionState: "error",
+      diagnosticNotice: `Local RYNA engine unreachable: ${err.message}`,
+    });
+  }
+}
+
+async function loadConversations() {
+  const data = await apiRequest("/api/v1/conversations");
+  const convs = data.conversations || [];
+  let activeId = store.state.activeConvId;
+  if (!activeId && convs.length > 0) activeId = convs[0].id;
+  if (activeId && !convs.some((c) => c.id === activeId)) activeId = convs[0]?.id || null;
+  store.set({ conversations: convs, activeConvId: activeId });
+  if (activeId) {
+    await loadMessages(activeId);
+  } else {
+    store.set({ messages: [] });
+  }
 }
 
 async function loadMessages(convId) {
-  const data = await api(`/api/v1/conversations/${convId}/messages`);
-  state.messages = data.messages || [];
-  renderMessages();
-}
-
-function renderMessages() {
-  const box = document.getElementById("chat-messages");
-  if (!state.messages.length) {
-    box.innerHTML = `<div class="muted">RYNA local conversation history is backed by SQLite. Send a message or run offline local tools (<code>/diag</code>, <code>/calc 15*24</code>, <code>/find README</code>, <code>/note ...</code>).</div>`;
-    return;
-  }
-  box.innerHTML = state.messages
-    .map((m) => {
-      const metaParts = [m.role.toUpperCase()];
-      if (m.provider) metaParts.push(m.provider);
-      if (m.model) metaParts.push(m.model);
-      metaParts.push(m.mode);
-      return `
-        <div class="msg ${escapeHtml(m.role)}">
-          <div>${escapeHtml(m.content)}</div>
-          <div class="msg-meta">${escapeHtml(metaParts.join(" • "))}</div>
-        </div>`;
-    })
-    .join("");
-  box.scrollTop = box.scrollHeight;
-}
-
-async function handleSendMessage(evt) {
-  evt.preventDefault();
-  const input = document.getElementById("chat-input");
-  const text = input.value.trim();
-  if (!text) return;
-
-  const btn = document.getElementById("btn-send");
-  btn.disabled = true;
-  input.value = "";
-  try {
-    const res = await api("/api/v1/chat", {
-      method: "POST",
-      body: { conversation_id: state.activeConvId, message: text },
-    });
-    state.activeConvId = res.conversation_id;
-    await loadConversations();
-    await refreshAll();
-  } catch (err) {
-    toast(`Send failed: ${err.message}`);
-  } finally {
-    btn.disabled = false;
-    input.focus();
-  }
-}
-
-/* ---------- Companion Canvas ---------- */
-function initCompanionButtons() {
-  const host = document.getElementById("companion-state-buttons");
-  host.innerHTML = Object.keys(COMPANION_STYLE)
-    .map((st) => `<button class="btn-secondary small" data-cstate="${st}">${st}</button>`)
-    .join("");
-  host.addEventListener("click", async (e) => {
-    const btn = e.target.closest("button[data-cstate]");
-    if (!btn) return;
-    const next = btn.dataset.cstate;
-    await api("/api/v1/voice/state", { method: "POST", body: { state: next } });
-    state.companionState = next;
-    document.getElementById("chip-companion-state").textContent = `State: ${next}`;
-    document.getElementById("companion-caption").textContent = `RYNA • ${next.toUpperCase()}`;
-  });
-}
-
-function syncCompanionControls() {
-  const size = state.settings["appearance.companion_size"] ?? 170;
-  const alpha = state.settings["appearance.companion_transparency"] ?? 0.94;
-  document.getElementById("ctrl-comp-size").value = size;
-  document.getElementById("val-comp-size").textContent = size;
-  document.getElementById("ctrl-comp-alpha").value = alpha;
-  document.getElementById("val-comp-alpha").textContent = Number(alpha).toFixed(2);
-  document.getElementById("ctrl-comp-topmost").checked = !!state.settings["appearance.companion_always_on_top"];
-  document.getElementById("ctrl-reduced-anim").checked = !!state.settings["appearance.reduced_animations"];
-  document.getElementById("companion-caption").textContent = `RYNA • ${state.companionState.toUpperCase()}`;
-}
-
-function animateCompanion() {
-  const canvas = document.getElementById("companion-canvas");
-  if (canvas) {
-    const ctx = canvas.getContext("2d");
-    const reduced = !!state.settings["appearance.reduced_animations"];
-    const style = COMPANION_STYLE[state.companionState] || COMPANION_STYLE.idle;
-    state.animPhase += reduced ? style.speed * 0.25 : style.speed;
-
-    const w = canvas.width;
-    const h = canvas.height;
-    const cx = w / 2;
-    const cy = h / 2;
-    const pulse = reduced ? 0 : Math.sin(state.animPhase) * 7;
-
-    ctx.clearRect(0, 0, w, h);
-
-    // Subtle radial glow
-    const grad = ctx.createRadialGradient(cx, cy, 12, cx, cy, 120);
-    grad.addColorStop(0, style.accent + "55");
-    grad.addColorStop(1, "transparent");
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 120, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Dashed outer ring
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(state.animPhase * 0.35);
-    ctx.strokeStyle = style.ring;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([10, 8]);
-    ctx.beginPath();
-    ctx.arc(0, 0, 92 + pulse * 0.5, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-
-    // Rotating arcs
-    ctx.strokeStyle = style.accent;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 74, state.animPhase, state.animPhase + Math.PI * 0.65);
-    ctx.stroke();
-
-    ctx.strokeStyle = style.ring;
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 74, state.animPhase + Math.PI, state.animPhase + Math.PI * 1.45);
-    ctx.stroke();
-
-    // Core sphere
-    ctx.fillStyle = "#0e1d36";
-    ctx.strokeStyle = style.accent;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 52 + pulse * 0.35, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = style.accent;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 22 + pulse * 0.2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  requestAnimationFrame(animateCompanion);
-}
-
-/* ---------- Tasks ---------- */
-async function loadTasks() {
-  const filter = document.getElementById("task-filter").value;
-  const qs = filter ? `?status=${encodeURIComponent(filter)}` : "";
-  const data = await api(`/api/v1/tasks${qs}`);
-  state.tasks = data.tasks || [];
-  renderTasks();
-}
-
-function renderTasks() {
-  const list = document.getElementById("task-list");
-  if (!state.tasks.length) {
-    list.innerHTML = `<div class="muted">No tasks found. Create a task on the left.</div>`;
-    return;
-  }
-  list.innerHTML = state.tasks
-    .map((t) => {
-      const badgeClass =
-        t.status === "completed" ? "ok" :
-        t.status === "failed" ? "danger" :
-        t.status === "waiting_for_approval" || t.status === "paused" ? "warn" : "";
-      return `
-        <div class="list-card">
-          <div class="list-card-head">
-            <strong>${escapeHtml(t.title)}</strong>
-            <span class="badge ${badgeClass}">${escapeHtml(t.status)} • ${escapeHtml(t.outcome_status)}</span>
-          </div>
-          <div class="muted">Goal: ${escapeHtml(t.goal)} | Level ${t.permission_level}${t.requires_internet ? " | Online" : " | Offline-ready"}</div>
-          ${t.result_summary ? `<pre>${escapeHtml(t.result_summary)}</pre>` : ""}
-          ${t.error_message ? `<div class="inline-error">${escapeHtml(t.error_message)}</div>` : ""}
-          <div class="btn-row">
-            ${t.status === "pending" || t.status === "paused" ? `<button class="btn-primary small" data-task-act="run" data-id="${t.id}">Run / Resume</button>` : ""}
-            ${t.status === "waiting_for_approval" ? `<button class="btn-primary small" data-task-act="approve" data-id="${t.id}">Approve & Execute</button>` : ""}
-            ${t.status === "running" ? `<button class="btn-warn small" data-task-act="pause" data-id="${t.id}">Pause</button>` : ""}
-            ${!["completed", "cancelled"].includes(t.status) ? `<button class="btn-danger small" data-task-act="cancel" data-id="${t.id}">Cancel</button>` : ""}
-          </div>
-        </div>`;
-    })
-    .join("");
-}
-
-async function createTask(autoRun) {
-  const title = document.getElementById("task-title").value.trim();
-  const goal = document.getElementById("task-goal").value.trim();
-  if (!title || !goal) return;
-  await api("/api/v1/tasks", {
-    method: "POST",
-    body: {
-      title,
-      goal,
-      permission_level: Number(document.getElementById("task-perm").value),
-      requires_internet: document.getElementById("task-internet").checked,
-      auto_run: autoRun,
-    },
-  });
-  document.getElementById("task-form").reset();
-  toast(autoRun ? "Task created and executed." : "Task created.");
-  await loadTasks();
-  await refreshAll();
-}
-
-/* ---------- Memory Center ---------- */
-function syncMemoryControls() {
-  document.getElementById("mem-ctrl-enabled").checked = !!state.settings["memory.enabled"];
-  document.getElementById("mem-ctrl-paused").checked = !!state.settings["memory.learning_paused"];
+  const data = await apiRequest(`/api/v1/conversations/${convId}/messages`);
+  store.set({ messages: data.messages || [] });
+  scrollMessagesToBottom();
 }
 
 async function loadMemories() {
@@ -392,28 +187,420 @@ async function loadMemories() {
   const params = new URLSearchParams();
   if (cat) params.set("category", cat);
   if (q) params.set("q", q);
-  const data = await api(`/api/v1/memories?${params.toString()}`);
-  state.memories = data.memories || [];
+  const data = await apiRequest(`/api/v1/memories?${params.toString()}`);
+  store.set({ memories: data.memories || [] });
   renderMemories();
+}
+
+async function loadTasks() {
+  const status = document.getElementById("task-filter").value;
+  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+  const data = await apiRequest(`/api/v1/tasks${qs}`);
+  store.set({ tasks: data.tasks || [] });
+  renderTasks();
+}
+
+async function loadActivity() {
+  const cat = document.getElementById("activity-filter").value;
+  const qs = cat ? `?category=${encodeURIComponent(cat)}` : "";
+  const data = await apiRequest(`/api/v1/activity${qs}`);
+  store.set({ activity: data.events || [] });
+  renderActivity();
+}
+
+/* ---------- Streaming Chat, Attachments, Stop & Retry ---------- */
+async function sendMessage(textOverride = null, { fromVoice = false, skipUserInsert = false } = {}) {
+  const input = document.getElementById("chat-input");
+  const text = (textOverride !== null ? textOverride : input.value).trim();
+  const attachments = [...store.state.attachments];
+
+  if (!text && attachments.length === 0) return;
+
+  // Interrupt any active speech before sending a new turn
+  if (store.state.voice.isSpeaking) {
+    await voice.interrupt("User sent new message");
+  }
+
+  if (textOverride === null) {
+    input.value = "";
+    autoSizeTextarea(input);
+  }
+  store.set({ attachments: [], isGenerating: true, companionState: "processing", companionSubtext: "Thinking…" });
+  renderAttachments();
+
+  // Optimistically render user message immediately so the UI feels instant
+  if (!skipUserInsert) {
+    const tempUser = {
+      id: "temp_user_" + Date.now(),
+      role: "user",
+      content: text || `[Attached ${attachments.length} file(s)]`,
+      mode: store.state.operatingMode.online ? "online" : "offline",
+      metadata: attachments.length ? { attachments: attachments.map((a) => ({ name: a.name, size: a.size })) } : {},
+      created_at: new Date().toISOString(),
+    };
+    store.set({
+      messages: [...store.state.messages, tempUser],
+      streamingMessage: { content: "", provider: "", model: "" },
+    });
+    scrollMessagesToBottom();
+  } else {
+    store.set({ streamingMessage: { content: "", provider: "", model: "" } });
+  }
+
+  activeAbortController = new AbortController();
+  let finalAssistantText = "";
+  let aiAvailable = true;
+
+  try {
+    const resp = await fetch("/api/v1/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversation_id: store.state.activeConvId,
+        message: text,
+        attachments,
+        skip_user_insert: skipUserInsert,
+      }),
+      signal: activeAbortController.signal,
+    });
+
+    if (!resp.ok || !resp.body) {
+      throw new Error(`Stream request failed (HTTP ${resp.status})`);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sepIdx;
+      while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+        const block = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+        const evt = parseSseBlock(block);
+        if (!evt) continue;
+
+        if (evt.event === "meta") {
+          if (evt.data.conversation_id) {
+            store.set({ activeConvId: evt.data.conversation_id });
+          }
+        } else if (evt.event === "delta") {
+          const cur = store.state.streamingMessage || { content: "", provider: "", model: "" };
+          const updated = {
+            content: cur.content + (evt.data.delta || ""),
+            provider: evt.data.provider || cur.provider,
+            model: evt.data.model || cur.model,
+          };
+          store.set({ streamingMessage: updated });
+          scrollMessagesToBottom();
+        } else if (evt.event === "done") {
+          finalAssistantText = evt.data.assistant_message?.content || "";
+          aiAvailable = evt.data.ai_available !== false;
+        } else if (evt.event === "error") {
+          aiAvailable = false;
+          store.set({ companionState: "error", companionSubtext: "AI provider unavailable." });
+        }
+      }
+    }
+  } catch (err) {
+    if (err.name === "AbortError") {
+      toast("Generation stopped.");
+    } else {
+      store.set({
+        companionState: "error",
+        diagnosticNotice: `Chat error: ${err.message}`,
+      });
+    }
+  } finally {
+    activeAbortController = null;
+    store.set({ isGenerating: false, streamingMessage: null });
+    await loadConversations();
+    await refreshStatus();
+
+    const shouldSpeak =
+      aiAvailable &&
+      finalAssistantText &&
+      !finalAssistantText.startsWith("[Local Tool:") &&
+      (fromVoice || (store.state.settings["voice.enabled"] && store.state.settings["voice.auto_speak"]));
+
+    if (shouldSpeak) {
+      voice.speak(finalAssistantText);
+    } else if (!store.state.voice.isListening && store.state.companionState === "processing") {
+      store.set({ companionState: "idle", companionSubtext: "Ready when you are." });
+    }
+  }
+}
+
+function parseSseBlock(block) {
+  let event = "message";
+  const dataLines = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  if (!dataLines.length) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return null;
+  }
+}
+
+async function stopGeneration() {
+  if (activeAbortController) {
+    activeAbortController.abort();
+    activeAbortController = null;
+  }
+  await voice.interrupt("User stopped generation");
+  store.set({ isGenerating: false, streamingMessage: null });
+}
+
+async function retryAssistantMessage(msgId) {
+  const convId = store.state.activeConvId;
+  if (!convId || store.state.isGenerating) return;
+  const msgs = store.state.messages;
+  const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+  if (!lastUser) return;
+
+  try {
+    // Ask backend to retry cleanly using streaming when possible
+    if (msgId) {
+      await apiRequest("/api/v1/chat/retry", {
+        method: "POST",
+        body: { conversation_id: convId, message_id: msgId },
+      });
+      await loadMessages(convId);
+      await refreshStatus();
+      toast("Retried response.");
+      return;
+    }
+    await sendMessage(lastUser.content, { skipUserInsert: true });
+  } catch (err) {
+    toast(`Retry failed: ${err.message}`);
+  }
+}
+
+/* ---------- Rendering ---------- */
+function renderState(st) {
+  // Brand & operating mode pill
+  document.getElementById("brand-ver").textContent = st.status?.version || "0.2.0";
+  const modePill = document.getElementById("operating-mode-pill");
+  const op = st.operatingMode || {};
+  modePill.className = `mode-pill ${op.id || "ai_unavailable"}`;
+  const modelSuffix = op.active_model ? ` · ${op.active_model}` : "";
+  document.getElementById("operating-mode-text").textContent = `${op.label || "Checking…"}${modelSuffix}`;
+  const modeDot = modePill.querySelector(".dot");
+  modeDot.className =
+    "dot " +
+    (op.id === "online_cloud_ai" || op.id === "online_local_ai"
+      ? "ok"
+      : op.id === "offline_local_ai"
+      ? "cyan"
+      : "warn");
+
+  // Voice & Audio chip (honest live status)
+  const vChip = document.getElementById("voice-status-chip");
+  const vDot = vChip.querySelector(".dot");
+  const vText = document.getElementById("voice-status-text");
+  if (st.voice.isListening) {
+    vDot.className = "dot cyan";
+    vText.textContent = "Mic: Listening";
+  } else if (st.voice.isSpeaking) {
+    vDot.className = "dot ok";
+    vText.textContent = "Audio: Speaking";
+  } else if (!st.voice.sttSupported) {
+    vDot.className = "dot warn";
+    vText.textContent = "STT: Browser Unsupported";
+  } else if (!st.voice.micAvailable) {
+    vDot.className = "dot warn";
+    vText.textContent = "Mic: Not Detected";
+  } else {
+    vDot.className = "dot ok";
+    vText.textContent = st.voice.isWakeArmed ? "Voice: Wake Armed" : "Voice: Ready";
+  }
+
+  // Backend health chip
+  const hDot = document.getElementById("backend-health-chip").querySelector(".dot");
+  hDot.className = `dot ${st.backendHealthy ? "ok" : "error"}`;
+  document.getElementById("backend-health-text").textContent = st.backendHealthy ? "Engine OK" : "Engine Offline";
+
+  // Banners
+  document.getElementById("emergency-banner").classList.toggle("hidden", !st.emergencyStopped);
+  const diagBanner = document.getElementById("diagnostic-banner");
+  diagBanner.classList.toggle("hidden", !st.diagnosticNotice);
+  document.getElementById("diagnostic-banner-text").textContent = st.diagnosticNotice;
+
+  // Companion header & controls
+  const badge = document.getElementById("companion-state-badge");
+  badge.textContent = st.companionState;
+  badge.dataset.state = st.companionState;
+  document.getElementById("companion-subtext").textContent = st.companionSubtext;
+  document.getElementById("active-model-tag").textContent = op.active_model ? `${op.active_provider}/${op.active_model}` : "";
+  document.getElementById("companion-presence").classList.toggle("compact", st.companionCompact);
+
+  const liveTx = document.getElementById("live-transcript");
+  liveTx.classList.toggle("hidden", !st.voice.liveTranscript);
+  liveTx.textContent = st.voice.liveTranscript ? `“${st.voice.liveTranscript}”` : "";
+
+  const wakeDot = document.getElementById("wake-dot");
+  wakeDot.className = `dot ${st.voice.isWakeArmed ? "cyan" : ""}`;
+  document.getElementById("wake-btn-label").textContent = st.voice.isWakeArmed
+    ? `Wake: ${st.settings["voice.wake_word"] || "Hey Ryna"}`
+    : "Wake Word Off";
+
+  // Input action buttons synchronized with live state
+  document.getElementById("btn-mic").classList.toggle("listening", st.voice.isListening);
+  document.getElementById("btn-stop-gen").classList.toggle("hidden", !st.isGenerating);
+  document.getElementById("btn-interrupt-speech").classList.toggle("hidden", !st.voice.isSpeaking);
+  document.getElementById("btn-header-interrupt").classList.toggle("hidden", !(st.voice.isSpeaking || st.isGenerating));
+  document.getElementById("btn-send").disabled = st.isGenerating;
+  document.getElementById("auto-speak-indicator").textContent =
+    st.settings["voice.enabled"] && st.settings["voice.auto_speak"] ? "Voice replies: On" : "Voice replies: Off";
+
+  // History drawer & floating dock
+  document.getElementById("home-grid").classList.toggle("history-collapsed", !st.historyOpen);
+  document.getElementById("floating-dock").classList.toggle("hidden", !st.dockOpen);
+  document.getElementById("dock-state-text").textContent = st.companionState;
+  if (st.voice.liveTranscript) {
+    document.getElementById("dock-transcript").textContent = `“${st.voice.liveTranscript}”`;
+  } else if (st.streamingMessage?.content) {
+    document.getElementById("dock-transcript").textContent = st.streamingMessage.content.slice(-160);
+  } else {
+    document.getElementById("dock-transcript").textContent = st.companionSubtext;
+  }
+
+  renderConversations();
+  renderMessages();
+  syncMemoryControls();
+}
+
+function renderConversations() {
+  const list = document.getElementById("conv-list");
+  const convs = store.state.conversations;
+  if (!convs.length) {
+    list.innerHTML = `<div class="muted" style="padding:8px;">No conversations yet.</div>`;
+    return;
+  }
+  list.innerHTML = convs
+    .map(
+      (c) => `
+      <div class="conv-item ${c.id === store.state.activeConvId ? "active" : ""}" data-conv="${c.id}">
+        <span class="conv-title">${esc(c.title)}</span>
+        <button class="conv-del" data-del-conv="${c.id}" title="Delete">✕</button>
+      </div>`
+    )
+    .join("");
+}
+
+function renderMessages() {
+  const box = document.getElementById("messages-viewport");
+  const msgs = store.state.messages;
+  const streaming = store.state.streamingMessage;
+
+  if (!msgs.length && !streaming) {
+    const op = store.state.operatingMode;
+    const hint = op.active_model
+      ? `Connected to ${op.active_provider} (${op.active_model}). Type a message, attach a file, or click the microphone to speak.`
+      : `Local tools (/diag, /calc, /find, /note) work offline right now. Configure Ollama or Cloud AI in Settings to enable AI replies.`;
+    box.innerHTML = `
+      <div class="empty-state">
+        <h2>Hello, I'm RYNA</h2>
+        <p>${esc(hint)}</p>
+      </div>`;
+    return;
+  }
+
+  const html = msgs
+    .map((m) => {
+      const atts = m.metadata?.attachments || [];
+      const attHtml = atts.length
+        ? `<div class="msg-attachments">${atts.map((a) => `<span class="att-badge">📎 ${esc(a.name)}</span>`).join("")}</div>`
+        : "";
+      const meta = [formatTime(m.created_at)];
+      if (m.provider) meta.push(m.provider);
+      if (m.model) meta.push(m.model);
+      if (m.metadata?.latency_ms) meta.push(`${m.metadata.latency_ms} ms`);
+
+      const actions =
+        m.role !== "user"
+          ? `<span class="msg-actions">
+               <button class="msg-act-btn" data-copy-msg="${m.id}">Copy</button>
+               <button class="msg-act-btn" data-speak-msg="${m.id}">Speak</button>
+               <button class="msg-act-btn" data-retry-msg="${m.id}">Retry</button>
+             </span>`
+          : "";
+
+      return `
+        <article class="msg-row ${esc(m.role)}">
+          ${attHtml}
+          <div class="msg-bubble">${renderMarkdownLite(m.content)}</div>
+          <div class="msg-footer">
+            <span>${esc(meta.filter(Boolean).join(" · "))}</span>
+            ${actions}
+          </div>
+        </article>`;
+    })
+    .join("");
+
+  const streamHtml = streaming
+    ? `<article class="msg-row assistant">
+         <div class="msg-bubble">${streaming.content ? renderMarkdownLite(streaming.content) : '<span class="muted">Thinking…</span>'}</div>
+         <div class="msg-footer"><span>Streaming${streaming.model ? ` · ${esc(streaming.model)}` : ""}…</span></div>
+       </article>`
+    : "";
+
+  box.innerHTML = html + streamHtml;
+}
+
+function scrollMessagesToBottom() {
+  const box = document.getElementById("messages-viewport");
+  if (box) box.scrollTop = box.scrollHeight;
+}
+
+function renderAttachments() {
+  const bar = document.getElementById("attachment-bar");
+  const atts = store.state.attachments;
+  bar.classList.toggle("hidden", !atts.length);
+  bar.innerHTML = atts
+    .map(
+      (a, idx) => `
+      <span class="attachment-chip">
+        <span>📎 ${esc(a.name)} (${Math.max(1, Math.round(a.size / 1024))} KB)</span>
+        <button type="button" data-rm-att="${idx}" aria-label="Remove attachment">✕</button>
+      </span>`
+    )
+    .join("");
+}
+
+function syncMemoryControls() {
+  const en = document.getElementById("mem-ctrl-enabled");
+  const pa = document.getElementById("mem-ctrl-paused");
+  if (en) en.checked = !!store.state.settings["memory.enabled"];
+  if (pa) pa.checked = !!store.state.settings["memory.learning_paused"];
 }
 
 function renderMemories() {
   const list = document.getElementById("memory-list");
-  if (!state.memories.length) {
-    list.innerHTML = `<div class="muted">No stored memories matching current filter.</div>`;
+  const items = store.state.memories;
+  if (!items.length) {
+    list.innerHTML = `<div class="muted">No memories stored matching your filter.</div>`;
     return;
   }
-  list.innerHTML = state.memories
+  list.innerHTML = items
     .map(
       (m) => `
-      <div class="list-card">
-        <div class="list-card-head">
-          <span class="badge">${escapeHtml(m.category)} • ${escapeHtml(m.memory_type)}</span>
-          <span class="muted">Confidence: ${Math.round((m.confidence || 0) * 100)}%</span>
+      <div class="record-card">
+        <div class="record-head">
+          <span class="badge">${esc(m.category)} · ${esc(m.memory_type)}</span>
+          <span class="muted">${Math.round((m.confidence || 0) * 100)}% confidence</span>
         </div>
-        <div>${escapeHtml(m.content)}</div>
-        <div class="muted">Source: ${escapeHtml(m.source)}${m.tags?.length ? ` • Tags: ${escapeHtml(m.tags.join(", "))}` : ""}</div>
-        <div class="btn-row">
+        <div>${esc(m.content)}</div>
+        <div class="muted">${m.tags?.length ? `Tags: ${esc(m.tags.join(", "))} · ` : ""}Updated ${formatTime(m.updated_at)}</div>
+        <div class="action-row">
           <button class="btn-secondary small" data-mem-edit="${m.id}">Edit</button>
           <button class="btn-danger small" data-mem-del="${m.id}">Delete</button>
         </div>
@@ -422,359 +609,491 @@ function renderMemories() {
     .join("");
 }
 
-/* ---------- Settings (All 16 Categories) ---------- */
-function renderSettingsNav() {
+function renderTasks() {
+  const list = document.getElementById("task-list");
+  const tasks = store.state.tasks;
+  if (!tasks.length) {
+    list.innerHTML = `<div class="muted">No tasks in queue. Create one to test persistent execution and approvals.</div>`;
+    return;
+  }
+  list.innerHTML = tasks
+    .map((t) => {
+      const steps = t.steps || [];
+      const doneSteps = steps.filter((s) => s.status === "completed").length;
+      const pct = steps.length ? Math.round((doneSteps / steps.length) * 100) : 0;
+      const badgeCls =
+        t.status === "completed" ? "ok" :
+        t.status === "failed" ? "error" :
+        t.status === "waiting_for_approval" || t.status === "paused" ? "warn" : "";
+
+      return `
+        <div class="record-card">
+          <div class="record-head">
+            <strong>${esc(t.title)}</strong>
+            <span class="badge ${badgeCls}">${esc(t.status)} · ${esc(t.outcome_status)}</span>
+          </div>
+          <div class="muted">${esc(t.goal)} · Level ${t.permission_level}${t.requires_internet ? " · Online" : " · Offline"}</div>
+          <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+          <div class="muted">Progress: ${doneSteps}/${steps.length} step(s) (${pct}%)</div>
+          ${t.result_summary ? `<pre style="margin:4px 0;font-size:11.5px;overflow:auto;">${esc(t.result_summary)}</pre>` : ""}
+          ${t.error_message ? `<div class="inline-error">${esc(t.error_message)}</div>` : ""}
+          <div class="action-row">
+            ${t.status === "pending" || t.status === "paused" ? `<button class="btn-primary small" data-task-act="run" data-id="${t.id}">Run / Resume</button>` : ""}
+            ${t.status === "waiting_for_approval" ? `<button class="btn-primary small" data-task-act="approve" data-id="${t.id}">Approve & Execute</button>` : ""}
+            ${t.status === "failed" || t.status === "cancelled" ? `<button class="btn-secondary small" data-task-act="retry" data-id="${t.id}">Retry</button>` : ""}
+            ${t.status === "running" ? `<button class="btn-warn small" data-task-act="pause" data-id="${t.id}">Pause</button>` : ""}
+            ${!["completed", "cancelled"].includes(t.status) ? `<button class="btn-danger small" data-task-act="cancel" data-id="${t.id}">Cancel</button>` : ""}
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+function renderActivity() {
+  const list = document.getElementById("activity-list");
+  const events = store.state.activity;
+  if (!events.length) {
+    list.innerHTML = `<div class="muted">No application events recorded yet. Send a message, run a tool, or use voice to see real events here.</div>`;
+    return;
+  }
+  list.innerHTML = events
+    .map((e) => {
+      const cls = e.status === "error" ? "error" : e.status === "warn" ? "warn" : e.status === "ok" ? "ok" : "muted";
+      return `
+        <div class="record-card">
+          <div class="record-head">
+            <div><span class="badge ${cls}">${esc(e.category)} · ${esc(e.event_type)}</span></div>
+            <span class="muted">${formatTime(e.created_at)}</span>
+          </div>
+          <div>${esc(e.summary)}</div>
+        </div>`;
+    })
+    .join("");
+}
+
+/* ---------- Settings ---------- */
+const SETTINGS_TABS = [
+  { id: "ai", label: "AI Providers & Models" },
+  { id: "voice", label: "Voice, Mic & Speaker" },
+  { id: "memory", label: "Memory & Privacy" },
+  { id: "permissions", label: "Permissions & Safety" },
+  { id: "companion", label: "Companion & Startup" },
+  { id: "system", label: "Notifications & Diagnostics" },
+];
+
+async function saveSettings(patch) {
+  const resp = await apiRequest("/api/v1/settings", { method: "PUT", body: { settings: patch } });
+  store.set({ settings: resp.settings });
+  toast("Settings saved.");
+  await refreshStatus();
+}
+
+function renderSettingsPanel() {
   const nav = document.getElementById("settings-nav");
-  nav.innerHTML = SETTINGS_CATEGORIES.map(
-    (c) => `<button class="nav-btn ${c.id === state.activeSettingsCat ? "active" : ""}" data-scat="${c.id}">${c.label}</button>`
-  ).join("");
-}
-
-async function saveSettingsPatch(patch) {
-  const resp = await api("/api/v1/settings", { method: "PUT", body: { settings: patch } });
-  state.settings = resp.settings;
-  toast("Settings saved to SQLite.");
-  await refreshAll();
-}
-
-function renderSettingsCategory() {
-  renderSettingsNav();
   const body = document.getElementById("settings-body");
-  const s = state.settings;
-  const st = state.status || {};
-  const cat = state.activeSettingsCat;
+  const tab = store.state.activeSettingsTab;
+  const s = store.state.settings;
+  const st = store.state.status || {};
 
-  if (cat === "general") {
+  nav.innerHTML = SETTINGS_TABS.map(
+    (t) => `<button class="nav-item ${t.id === tab ? "active" : ""}" data-stab="${t.id}"><span>${t.label}</span></button>`
+  ).join("");
+
+  if (tab === "ai") {
+    const provs = st.ai?.providers || {};
+    const ollamaModels = provs.ollama?.models || [];
+    const hw = st.hardware || {};
     body.innerHTML = `
-      <h3>General Settings</h3>
-      <div class="form-group"><label>Assistant Identity</label><input id="set-name" type="text" value="${escapeHtml(s["general.assistant_name"] || "RYNA")}" /></div>
-      <div class="form-group"><label>Language</label><input id="set-lang" type="text" value="${escapeHtml(s["general.language"] || "en")}" /></div>
-      <button class="btn-primary" id="save-general">Save General Settings</button>`;
-    document.getElementById("save-general").onclick = () =>
-      saveSettingsPatch({
-        "general.assistant_name": document.getElementById("set-name").value.trim() || "RYNA",
-        "general.language": document.getElementById("set-lang").value.trim() || "en",
-      });
-  } else if (cat === "appearance") {
-    body.innerHTML = `
-      <h3>Appearance</h3>
-      <div class="form-group"><label>Theme</label>
-        <select id="set-theme"><option value="midnight_cyan" selected>Midnight Cyan (Default)</option></select>
+      <h2>AI Providers — Local & Cloud</h2>
+      <p class="muted">Detected hardware: ${hw.ram_total_gb || "?"} GB RAM (${esc(hw.recommended_tier || "unknown")} tier). Recommended local models: <code>${esc((hw.recommended_local_models || []).join(", "))}</code>.</p>
+      <div class="field-row">
+        <label class="field"><span>Preferred Provider</span>
+          <select id="s-ai-pref">${["auto", "ollama", "openai", "anthropic", "gemini"].map((p) => `<option value="${p}" ${s["ai.preferred_provider"] === p ? "selected" : ""}>${p}</option>`).join("")}</select>
+        </label>
+        <label class="field"><span>Fallback Provider</span>
+          <select id="s-ai-fb">${["ollama", "openai", "anthropic", "gemini"].map((p) => `<option value="${p}" ${s["ai.fallback_provider"] === p ? "selected" : ""}>${p}</option>`).join("")}</select>
+        </label>
       </div>
-      <label class="toggle-row"><input type="checkbox" id="set-red-anim" ${s["appearance.reduced_animations"] ? "checked" : ""}/><span>Reduced Animations</span></label>
-      <label class="toggle-row"><input type="checkbox" id="set-topmost" ${s["appearance.companion_always_on_top"] ? "checked" : ""}/><span>Companion Always on Top</span></label>
-      <button class="btn-primary" id="save-app">Save Appearance</button>`;
-    document.getElementById("save-app").onclick = () =>
-      saveSettingsPatch({
-        "appearance.theme": document.getElementById("set-theme").value,
-        "appearance.reduced_animations": document.getElementById("set-red-anim").checked,
-        "appearance.companion_always_on_top": document.getElementById("set-topmost").checked,
+      <div class="divider"></div>
+      <h3>Local AI (Ollama)</h3>
+      <div class="field-row">
+        <label class="field"><span>Ollama URL</span><input id="s-ollama-url" type="text" value="${esc(s["ai.ollama_base_url"] || "http://127.0.0.1:11434")}" /></label>
+        <label class="field"><span>Active Local Model</span>
+          ${ollamaModels.length
+            ? `<select id="s-local-model"><option value="">Auto (${esc(ollamaModels[0])})</option>${ollamaModels.map((m) => `<option value="${esc(m)}" ${s["ai.local_model"] === m ? "selected" : ""}>${esc(m)}</option>`).join("")}</select>`
+            : `<input id="s-local-model" type="text" value="${esc(s["ai.local_model"] || "")}" placeholder="e.g., qwen2.5:3b" />`}
+        </label>
+      </div>
+      <div class="divider"></div>
+      <h3>Cloud AI</h3>
+      <label class="switch-row"><input type="checkbox" id="s-allow-cloud" ${s["ai.allow_cloud"] ? "checked" : ""}/><span>Allow Cloud AI when Online (keys loaded from .env)</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-sens-cloud" ${s["ai.send_sensitive_to_cloud"] ? "checked" : ""}/><span>Permit sending sensitive terms to cloud (Not Recommended)</span></label>
+      <div class="field-row">
+        <label class="field"><span>OpenAI Model</span><input id="s-oai-mod" type="text" value="${esc(s["ai.openai_model"] || "gpt-4o-mini")}" /></label>
+        <label class="field"><span>Gemini Model</span><input id="s-gem-mod" type="text" value="${esc(s["ai.gemini_model"] || "gemini-2.0-flash")}" /></label>
+      </div>
+      <div class="action-row"><button class="btn-primary" id="btn-save-ai">Save AI Configuration</button></div>
+      <div class="divider"></div>
+      <h3>Live Provider Status</h3>
+      ${Object.values(provs).map((p) => `<div class="record-card"><div class="record-head"><strong>${esc(p.name)} (${p.is_local ? "Local" : "Cloud"})</strong><span class="badge ${p.available ? "ok" : "warn"}">${p.available ? "Ready" : "Unavailable"}</span></div><div class="muted">${esc(p.detail)}</div></div>`).join("")}`;
+
+    document.getElementById("btn-save-ai").onclick = () =>
+      saveSettings({
+        "ai.preferred_provider": document.getElementById("s-ai-pref").value,
+        "ai.fallback_provider": document.getElementById("s-ai-fb").value,
+        "ai.ollama_base_url": document.getElementById("s-ollama-url").value.trim(),
+        "ai.local_model": document.getElementById("s-local-model").value.trim(),
+        "ai.allow_cloud": document.getElementById("s-allow-cloud").checked,
+        "ai.send_sensitive_to_cloud": document.getElementById("s-sens-cloud").checked,
+        "ai.openai_model": document.getElementById("s-oai-mod").value.trim(),
+        "ai.gemini_model": document.getElementById("s-gem-mod").value.trim(),
       });
-  } else if (cat === "voice") {
-    const backends = st.voice?.backends || [];
+  } else if (tab === "voice") {
+    const mics = store.state.voice.micDevices;
+    const allVoices = [
+      ...store.state.voice.sapiVoices.map((v) => ({ name: v, tag: "Windows SAPI Offline" })),
+      ...store.state.voice.browserVoices.map((v) => ({ name: v.name, tag: `Browser · ${v.lang}` })),
+    ];
+    const seen = new Set();
+    const uniqueVoices = allVoices.filter((v) => (seen.has(v.name) ? false : (seen.add(v.name), true)));
+
     body.innerHTML = `
-      <h3>Voice Pipeline</h3>
-      <label class="toggle-row"><input type="checkbox" id="set-v-en" ${s["voice.enabled"] ? "checked" : ""}/><span>Enable Voice Pipeline</span></label>
-      <div class="form-row">
-        <div class="form-group"><label>Mode</label>
-          <select id="set-v-mode">
+      <h2>Voice, Wake Word, Microphone & Speaker</h2>
+      <label class="switch-row"><input type="checkbox" id="s-v-en" ${s["voice.enabled"] ? "checked" : ""}/><span>Enable Voice Interaction</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-v-auto" ${s["voice.auto_speak"] ? "checked" : ""}/><span>Automatically speak RYNA's replies aloud</span></label>
+      <div class="field-row">
+        <label class="field"><span>Conversation Mode</span>
+          <select id="s-v-mode">
             <option value="push_to_talk" ${s["voice.mode"] === "push_to_talk" ? "selected" : ""}>Push-to-Talk</option>
             <option value="wake_word" ${s["voice.mode"] === "wake_word" ? "selected" : ""}>Wake Word ("Hey Ryna")</option>
-            <option value="continuous" ${s["voice.mode"] === "continuous" ? "selected" : ""}>Continuous Conversation</option>
+            <option value="continuous" ${s["voice.mode"] === "continuous" ? "selected" : ""}>Continuous Turn-Taking</option>
           </select>
-        </div>
-        <div class="form-group"><label>Wake Word</label><input id="set-v-wake" type="text" value="${escapeHtml(s["voice.wake_word"] || "Hey Ryna")}" /></div>
+        </label>
+        <label class="field"><span>Wake Word Phrase</span><input id="s-v-wake" type="text" value="${esc(s["voice.wake_word"] || "Hey Ryna")}" /></label>
       </div>
-      <div class="form-row">
-        <div class="form-group"><label>Sensitivity (0.1 - 1.0)</label><input id="set-v-sens" type="number" step="0.05" min="0.1" max="1" value="${s["voice.sensitivity"] ?? 0.65}" /></div>
-        <div class="form-group"><label>Speech Speed (0.5 - 2.0)</label><input id="set-v-speed" type="number" step="0.1" min="0.5" max="2" value="${s["voice.speech_speed"] ?? 1.0}" /></div>
-      </div>
-      <button class="btn-primary" id="save-voice">Save Voice Settings</button>
-      <hr class="divider"/>
-      <h4>Detected Local Voice Engines (Live Probe)</h4>
-      ${backends.map((b) => `<div class="list-card"><div class="list-card-head"><strong>${escapeHtml(b.name)} (${escapeHtml(b.role)})</strong><span class="badge ${b.available ? "ok" : "planned"}">${b.available ? "Installed" : "Not Installed"}</span></div><div class="muted">${escapeHtml(b.detail)}</div></div>`).join("")}`;
-    document.getElementById("save-voice").onclick = () =>
-      saveSettingsPatch({
-        "voice.enabled": document.getElementById("set-v-en").checked,
-        "voice.mode": document.getElementById("set-v-mode").value,
-        "voice.wake_word": document.getElementById("set-v-wake").value.trim() || "Hey Ryna",
-        "voice.sensitivity": Number(document.getElementById("set-v-sens").value),
-        "voice.speech_speed": Number(document.getElementById("set-v-speed").value),
-      });
-  } else if (cat === "ai_models") {
-    const provs = Object.values(st.ai?.providers || {});
-    body.innerHTML = `
-      <h3>AI Models & Routing</h3>
-      <div class="form-row">
-        <div class="form-group"><label>Preferred Provider</label>
-          <select id="set-ai-pref">
-            ${["auto", "ollama", "openai", "anthropic", "gemini"].map((p) => `<option value="${p}" ${s["ai.preferred_provider"] === p ? "selected" : ""}>${p}</option>`).join("")}
+      <div class="field-row">
+        <label class="field"><span>Speech Synthesis Engine</span>
+          <select id="s-v-tts">
+            <option value="browser" ${s["voice.tts_engine"] !== "windows-sapi" ? "selected" : ""}>Browser SpeechSynthesis (Instant + Word Sync)</option>
+            <option value="windows-sapi" ${s["voice.tts_engine"] === "windows-sapi" ? "selected" : ""}>Windows Native SAPI (100% Offline OS Engine)</option>
           </select>
-        </div>
-        <div class="form-group"><label>Fallback Provider</label>
-          <select id="set-ai-fb">
-            ${["ollama", "openai", "anthropic", "gemini"].map((p) => `<option value="${p}" ${s["ai.fallback_provider"] === p ? "selected" : ""}>${p}</option>`).join("")}
+        </label>
+        <label class="field"><span>Speech Speed (${Number(s["voice.speech_speed"] ?? 1.0).toFixed(1)}x)</span>
+          <input id="s-v-speed" type="range" min="0.6" max="1.8" step="0.1" value="${s["voice.speech_speed"] ?? 1.0}" />
+        </label>
+      </div>
+      <div class="field-row">
+        <label class="field"><span>Voice Selection</span>
+          <select id="s-v-voice">
+            ${uniqueVoices.length
+              ? uniqueVoices.map((v) => `<option value="${esc(v.name)}" ${s["voice.selected_voice"] === v.name ? "selected" : ""}>${esc(v.name)} (${esc(v.tag)})</option>`).join("")
+              : `<option value="Microsoft Zira Desktop">System Default</option>`}
           </select>
-        </div>
+        </label>
+        <label class="field"><span>Microphone Input</span>
+          <select id="s-v-mic">
+            <option value="default">System Default Microphone</option>
+            ${mics.map((m) => `<option value="${esc(m.deviceId)}" ${s["voice.microphone"] === m.deviceId ? "selected" : ""}>${esc(m.label)}</option>`).join("")}
+          </select>
+        </label>
       </div>
-      <button class="btn-primary" id="save-ai-route">Save Routing</button>
-      <hr class="divider"/>
-      <h4>Live Provider Status</h4>
-      ${provs.map((p) => `<div class="list-card"><div class="list-card-head"><strong>${escapeHtml(p.name)} (${p.is_local ? "Local" : "Cloud"})</strong><span class="badge ${p.available ? "ok" : "warn"}">${p.available ? "Ready" : "Unavailable"}</span></div><div class="muted">${escapeHtml(p.detail)}</div></div>`).join("")}`;
-    document.getElementById("save-ai-route").onclick = () =>
-      saveSettingsPatch({
-        "ai.preferred_provider": document.getElementById("set-ai-pref").value,
-        "ai.fallback_provider": document.getElementById("set-ai-fb").value,
-      });
-  } else if (cat === "offline_ai") {
-    const hw = st.hardware || {};
-    const installed = st.ai?.providers?.ollama?.models || [];
-    body.innerHTML = `
-      <h3>Offline AI (Local Models)</h3>
-      <p class="muted">Detected hardware tier: <strong>${escapeHtml(hw.recommended_tier || "unknown")}</strong> (${hw.ram_total_gb || "?"} GB RAM). Recommended models: <code>${escapeHtml((hw.recommended_local_models || []).join(", "))}</code>.</p>
-      <div class="form-group"><label>Ollama Base URL</label><input id="set-ollama-url" type="text" value="${escapeHtml(s["ai.ollama_base_url"] || "http://127.0.0.1:11434")}" /></div>
-      <div class="form-group"><label>Local Model Name (leave blank for first installed model)</label><input id="set-local-model" type="text" value="${escapeHtml(s["ai.local_model"] || "")}" placeholder="${installed[0] || "e.g., qwen2.5:3b"}" /></div>
-      <div class="muted">Installed Ollama models detected right now: ${installed.length ? escapeHtml(installed.join(", ")) : "None detected (ensure Ollama is running and pull a model)."}</div>
-      <button class="btn-primary" id="save-offline">Save Offline AI Settings</button>`;
-    document.getElementById("save-offline").onclick = () =>
-      saveSettingsPatch({
-        "ai.ollama_base_url": document.getElementById("set-ollama-url").value.trim(),
-        "ai.local_model": document.getElementById("set-local-model").value.trim(),
-      });
-  } else if (cat === "online_ai") {
-    body.innerHTML = `
-      <h3>Online / Cloud AI</h3>
-      <p class="muted">API keys are read only from <code>.env</code> environment variables and are never written to ordinary memory.</p>
-      <label class="toggle-row"><input type="checkbox" id="set-allow-cloud" ${s["ai.allow_cloud"] ? "checked" : ""}/><span>Allow Cloud AI Providers when Online</span></label>
-      <label class="toggle-row"><input type="checkbox" id="set-sens-cloud" ${s["ai.send_sensitive_to_cloud"] ? "checked" : ""}/><span>Allow sending prompts with sensitive terms to cloud (Not Recommended)</span></label>
-      <div class="form-group"><label>OpenAI-Compatible Base URL</label><input id="set-oai-url" type="text" value="${escapeHtml(s["ai.openai_base_url"] || "https://api.openai.com/v1")}" /></div>
-      <div class="form-row">
-        <div class="form-group"><label>OpenAI Model</label><input id="set-oai-mod" type="text" value="${escapeHtml(s["ai.openai_model"] || "gpt-4o-mini")}" /></div>
-        <div class="form-group"><label>Anthropic Model</label><input id="set-ant-mod" type="text" value="${escapeHtml(s["ai.anthropic_model"] || "claude-3-5-sonnet-latest")}" /></div>
+      <div class="action-row">
+        <button class="btn-primary" id="btn-save-voice">Save Voice Settings</button>
+        <button class="btn-secondary" id="btn-test-voice">Test Voice Output</button>
       </div>
-      <div class="form-group"><label>Gemini Model</label><input id="set-gem-mod" type="text" value="${escapeHtml(s["ai.gemini_model"] || "gemini-2.0-flash")}" /></div>
-      <button class="btn-primary" id="save-online">Save Online AI Settings</button>`;
-    document.getElementById("save-online").onclick = () =>
-      saveSettingsPatch({
-        "ai.allow_cloud": document.getElementById("set-allow-cloud").checked,
-        "ai.send_sensitive_to_cloud": document.getElementById("set-sens-cloud").checked,
-        "ai.openai_base_url": document.getElementById("set-oai-url").value.trim(),
-        "ai.openai_model": document.getElementById("set-oai-mod").value.trim(),
-        "ai.anthropic_model": document.getElementById("set-ant-mod").value.trim(),
-        "ai.gemini_model": document.getElementById("set-gem-mod").value.trim(),
+      <div class="divider"></div>
+      <h3>Detected Audio & Voice Backends</h3>
+      ${(st.voice?.backends || []).map((b) => `<div class="record-card"><div class="record-head"><strong>${esc(b.name)} (${esc(b.role)})</strong><span class="badge ${b.available ? "ok" : "muted"}">${b.available ? "Available" : "Not Installed"}</span></div><div class="muted">${esc(b.detail)}</div></div>`).join("")}`;
+
+    document.getElementById("btn-save-voice").onclick = () =>
+      saveSettings({
+        "voice.enabled": document.getElementById("s-v-en").checked,
+        "voice.auto_speak": document.getElementById("s-v-auto").checked,
+        "voice.mode": document.getElementById("s-v-mode").value,
+        "voice.wake_word": document.getElementById("s-v-wake").value.trim() || "Hey Ryna",
+        "voice.tts_engine": document.getElementById("s-v-tts").value,
+        "voice.speech_speed": Number(document.getElementById("s-v-speed").value),
+        "voice.selected_voice": document.getElementById("s-v-voice").value,
+        "voice.microphone": document.getElementById("s-v-mic").value,
       });
-  } else if (cat === "memory") {
+
+    document.getElementById("btn-test-voice").onclick = () => {
+      voice.speak("Hello. RYNA voice output is active and ready.");
+    };
+  } else if (tab === "memory") {
     body.innerHTML = `
-      <h3>Memory Settings</h3>
-      <label class="toggle-row"><input type="checkbox" id="set-m-en" ${s["memory.enabled"] ? "checked" : ""}/><span>Enable Persistent Memory</span></label>
-      <label class="toggle-row"><input type="checkbox" id="set-m-pause" ${s["memory.learning_paused"] ? "checked" : ""}/><span>Pause Automatic Learning</span></label>
-      <div class="form-group"><label>Retention Period (days)</label><input id="set-m-ret" type="number" min="1" max="3650" value="${s["memory.retention_days"] ?? 365}" /></div>
-      <label class="toggle-row"><input type="checkbox" disabled /><span>Encrypted Cloud Memory Sync <span class="badge planned">Planned</span></span></label>
-      <button class="btn-primary" id="save-mem-set">Save Memory Settings</button>`;
-    document.getElementById("save-mem-set").onclick = () =>
-      saveSettingsPatch({
-        "memory.enabled": document.getElementById("set-m-en").checked,
-        "memory.learning_paused": document.getElementById("set-m-pause").checked,
-        "memory.retention_days": Number(document.getElementById("set-m-ret").value),
+      <h2>Memory & Privacy</h2>
+      <label class="switch-row"><input type="checkbox" id="s-m-en" ${s["memory.enabled"] ? "checked" : ""}/><span>Enable Persistent Memory</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-m-pause" ${s["memory.learning_paused"] ? "checked" : ""}/><span>Pause Automatic Learning</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-p-redact" ${s["privacy.redact_secrets"] ? "checked" : ""}/><span>Block passwords, tokens, and API keys from ordinary memory</span></label>
+      <label class="field"><span>Memory Retention (days)</span><input id="s-m-ret" type="number" min="1" max="3650" value="${s["memory.retention_days"] ?? 365}" /></label>
+      <div class="action-row"><button class="btn-primary" id="btn-save-mem">Save Memory & Privacy</button></div>`;
+    document.getElementById("btn-save-mem").onclick = () =>
+      saveSettings({
+        "memory.enabled": document.getElementById("s-m-en").checked,
+        "memory.learning_paused": document.getElementById("s-m-pause").checked,
+        "privacy.redact_secrets": document.getElementById("s-p-redact").checked,
+        "memory.retention_days": Number(document.getElementById("s-m-ret").value),
       });
-  } else if (cat === "privacy") {
+  } else if (tab === "permissions") {
     body.innerHTML = `
-      <h3>Privacy</h3>
-      <label class="toggle-row"><input type="checkbox" id="set-p-redact" ${s["privacy.redact_secrets"] ? "checked" : ""}/><span>Reject passwords, tokens, and API keys from ordinary memory</span></label>
-      <label class="toggle-row"><input type="checkbox" id="set-p-tel" ${s["privacy.telemetry"] ? "checked" : ""}/><span>Diagnostic Telemetry (off by default; no telemetry server exists in 0.1.0)</span></label>
-      <button class="btn-primary" id="save-priv">Save Privacy Settings</button>`;
-    document.getElementById("save-priv").onclick = () =>
-      saveSettingsPatch({
-        "privacy.redact_secrets": document.getElementById("set-p-redact").checked,
-        "privacy.telemetry": document.getElementById("set-p-tel").checked,
+      <h2>Permissions & Computer Control</h2>
+      <label class="switch-row"><input type="checkbox" id="s-p1" ${s["permissions.level1_auto"] ? "checked" : ""}/><span>Level 1 (Automatic): Allow read-only local tools without prompt</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-p2" ${s["permissions.level2_require_confirm"] ? "checked" : ""}/><span>Level 2 (Confirmation): Require explicit approval before execution</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-p3" ${s["permissions.level3_block_destructive"] ? "checked" : ""}/><span>Level 3 (Restricted): Block destructive commands and security modifications</span></label>
+      <label class="field"><span>Allowed Workspace File Root</span><input id="s-cc-root" type="text" value="${esc(s["computer_control.allowed_root"] || ".")}" /></label>
+      <div class="action-row"><button class="btn-primary" id="btn-save-perm">Save Permissions</button></div>`;
+    document.getElementById("btn-save-perm").onclick = () =>
+      saveSettings({
+        "permissions.level1_auto": document.getElementById("s-p1").checked,
+        "permissions.level2_require_confirm": document.getElementById("s-p2").checked,
+        "permissions.level3_block_destructive": document.getElementById("s-p3").checked,
+        "computer_control.allowed_root": document.getElementById("s-cc-root").value.trim() || ".",
       });
-  } else if (cat === "permissions") {
+  } else if (tab === "companion") {
     body.innerHTML = `
-      <h3>Permission & Security Levels</h3>
-      <label class="toggle-row"><input type="checkbox" id="set-perm-1" ${s["permissions.level1_auto"] ? "checked" : ""}/><span>Level 1 (Automatic): Allow read-only local tools without prompt</span></label>
-      <label class="toggle-row"><input type="checkbox" id="set-perm-2" ${s["permissions.level2_require_confirm"] ? "checked" : ""}/><span>Level 2 (Confirmation): Require explicit user approval</span></label>
-      <label class="toggle-row"><input type="checkbox" id="set-perm-3" ${s["permissions.level3_block_destructive"] ? "checked" : ""}/><span>Level 3 (Restricted): Block destructive & security-critical actions</span></label>
-      <button class="btn-primary" id="save-perms">Save Permission Policy</button>`;
-    document.getElementById("save-perms").onclick = () =>
-      saveSettingsPatch({
-        "permissions.level1_auto": document.getElementById("set-perm-1").checked,
-        "permissions.level2_require_confirm": document.getElementById("set-perm-2").checked,
-        "permissions.level3_block_destructive": document.getElementById("set-perm-3").checked,
+      <h2>Companion Appearance & Windows Startup</h2>
+      <div class="field-row">
+        <label class="field"><span>Native Companion Size (${s["appearance.companion_size"] ?? 176}px)</span>
+          <input id="s-c-size" type="range" min="120" max="260" step="8" value="${s["appearance.companion_size"] ?? 176}" />
+        </label>
+        <label class="field"><span>Transparency (${Number(s["appearance.companion_transparency"] ?? 0.94).toFixed(2)})</span>
+          <input id="s-c-alpha" type="range" min="0.55" max="1.0" step="0.03" value="${s["appearance.companion_transparency"] ?? 0.94}" />
+        </label>
+      </div>
+      <label class="switch-row"><input type="checkbox" id="s-c-top" ${s["appearance.companion_always_on_top"] ? "checked" : ""}/><span>Native Companion Always on Top</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-c-red" ${s["appearance.reduced_animations"] ? "checked" : ""}/><span>Reduced Animations (low-resource mode)</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-st-comp" ${s["startup.show_companion_on_start"] ? "checked" : ""}/><span>Show Desktop Companion on Launch</span></label>
+      <p class="muted">Manage Windows user-login startup safely via <code>scripts/startup_windows.ps1 -Action status|enable|disable</code>.</p>
+      <div class="action-row"><button class="btn-primary" id="btn-save-comp">Save Appearance & Startup</button></div>`;
+    document.getElementById("btn-save-comp").onclick = () =>
+      saveSettings({
+        "appearance.companion_size": Number(document.getElementById("s-c-size").value),
+        "appearance.companion_transparency": Number(document.getElementById("s-c-alpha").value),
+        "appearance.companion_always_on_top": document.getElementById("s-c-top").checked,
+        "appearance.reduced_animations": document.getElementById("s-c-red").checked,
+        "startup.show_companion_on_start": document.getElementById("s-st-comp").checked,
       });
-  } else if (cat === "computer_control") {
+  } else {
     body.innerHTML = `
-      <h3>Computer Control</h3>
-      <div class="form-group"><label>Allowed Local Workspace Root (sandboxed file search & read)</label><input id="set-cc-root" type="text" value="${escapeHtml(s["computer_control.allowed_root"] || ".")}" /></div>
-      <label class="toggle-row"><input type="checkbox" disabled /><span>Desktop GUI Automation / Mouse & Keyboard Injection <span class="badge planned">Planned (Phase 5)</span></span></label>
-      <label class="toggle-row"><input type="checkbox" disabled /><span>Screen Capture & OCR Pipeline <span class="badge planned">Planned (Phase 5)</span></span></label>
-      <button class="btn-primary" id="save-cc">Save Computer Control Scope</button>`;
-    document.getElementById("save-cc").onclick = () =>
-      saveSettingsPatch({ "computer_control.allowed_root": document.getElementById("set-cc-root").value.trim() || "." });
-  } else if (cat === "notifications") {
-    body.innerHTML = `
-      <h3>Notifications & Proactivity</h3>
-      <label class="toggle-row"><input type="checkbox" id="set-n-en" ${s["notifications.enabled"] ? "checked" : ""}/><span>Enable Task & Reminder Notifications</span></label>
-      <label class="toggle-row"><input type="checkbox" id="set-n-pro" ${s["notifications.proactive_suggestions"] ? "checked" : ""}/><span>Allow Optional Proactive Suggestions</span></label>
-      <button class="btn-primary" id="save-notif">Save Notification Settings</button>`;
-    document.getElementById("save-notif").onclick = () =>
-      saveSettingsPatch({
-        "notifications.enabled": document.getElementById("set-n-en").checked,
-        "notifications.proactive_suggestions": document.getElementById("set-n-pro").checked,
+      <h2>Notifications & Live System Diagnostics</h2>
+      <label class="switch-row"><input type="checkbox" id="s-n-en" ${s["notifications.enabled"] ? "checked" : ""}/><span>Enable Task & System Notifications</span></label>
+      <label class="switch-row"><input type="checkbox" id="s-n-pro" ${s["notifications.proactive_suggestions"] ? "checked" : ""}/><span>Allow Optional Proactive Suggestions</span></label>
+      <div class="action-row"><button class="btn-primary" id="btn-save-notif">Save Notification Preferences</button></div>
+      <div class="divider"></div>
+      <h3>Hardware & Database Telemetry (Live Local Readout)</h3>
+      <pre style="background:var(--bg-obsidian);padding:12px;border-radius:10px;border:1px solid var(--border-subtle);overflow:auto;font-size:12px;">${esc(JSON.stringify({ hardware: st.hardware, database: st.database }, null, 2))}</pre>`;
+    document.getElementById("btn-save-notif").onclick = () =>
+      saveSettings({
+        "notifications.enabled": document.getElementById("s-n-en").checked,
+        "notifications.proactive_suggestions": document.getElementById("s-n-pro").checked,
       });
-  } else if (cat === "devices") {
-    body.innerHTML = `
-      <h3>Devices</h3>
-      <p class="muted">Current device: <strong>${escapeHtml(st.hardware?.os_name || "Windows")} (${escapeHtml(st.hardware?.architecture || "")})</strong>.</p>
-      <div class="list-card"><div class="list-card-head"><strong>Multi-Device Pairing (Android / iOS / macOS / Linux)</strong><span class="badge planned">Planned (Phase 7)</span></div><div class="muted">Cross-device discovery and encrypted sync are not yet implemented in 0.1.0.</div></div>`;
-  } else if (cat === "storage") {
-    const db = st.database || {};
-    body.innerHTML = `
-      <h3>Local Storage (SQLite)</h3>
-      <pre>${escapeHtml(JSON.stringify(db, null, 2))}</pre>`;
-  } else if (cat === "startup") {
-    body.innerHTML = `
-      <h3>Windows Startup & Lifecycle</h3>
-      <label class="toggle-row"><input type="checkbox" id="set-st-comp" ${s["startup.show_companion_on_start"] ? "checked" : ""}/><span>Show Desktop Companion on Launch</span></label>
-      <p class="muted">To register or remove Windows login startup safely (HKCU Run registry key), run <code>powershell -File scripts/startup_windows.ps1 -Action enable|disable|status</code>.</p>
-      <button class="btn-primary" id="save-start">Save Startup Preference</button>`;
-    document.getElementById("save-start").onclick = () =>
-      saveSettingsPatch({ "startup.show_companion_on_start": document.getElementById("set-st-comp").checked });
-  } else if (cat === "diagnostics") {
-    body.innerHTML = `<h3>Live System Diagnostics & Audit Log</h3><pre id="diag-json">Loading...</pre><div id="audit-list" class="item-list"></div>`;
-    document.getElementById("diag-json").textContent = JSON.stringify(st.hardware || {}, null, 2);
-    api("/api/v1/audit").then((d) => {
-      const box = document.getElementById("audit-list");
-      const entries = d.entries || [];
-      box.innerHTML = entries.length
-        ? entries.slice(0, 20).map((e) => `<div class="list-card"><div class="list-card-head"><strong>${escapeHtml(e.action_type)}</strong><span class="badge">${escapeHtml(e.status)} (L${e.permission_level})</span></div><div class="muted">${escapeHtml(e.target)} • ${escapeHtml(e.created_at)}</div></div>`).join("")
-        : `<div class="muted">No audit entries recorded yet.</div>`;
-    });
-  } else if (cat === "updates") {
-    body.innerHTML = `
-      <h3>Updates</h3>
-      <p>Installed Version: <strong>RYNA ${escapeHtml(st.version || "0.1.0")}</strong></p>
-      <button class="btn-secondary" disabled>Check for Updates (Unavailable — Planned Phase 8)</button>`;
   }
 }
 
-/* ---------- Event Wiring ---------- */
-function bindEvents() {
-  document.querySelectorAll(".nav-btn[data-view]").forEach((btn) => {
+/* ---------- Navigation & Events ---------- */
+function switchView(viewId) {
+  store.set({ activeView: viewId });
+  document.querySelectorAll(".nav-item[data-view]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.view === viewId);
+  });
+  document.querySelectorAll(".view").forEach((v) => {
+    v.classList.toggle("active", v.id === `view-${viewId}`);
+  });
+  const titles = { home: "Home", memory: "Memory", tasks: "Tasks", activity: "Activity", settings: "Settings" };
+  document.getElementById("view-title").textContent = titles[viewId] || "RYNA";
+  if (viewId === "memory") loadMemories();
+  if (viewId === "tasks") loadTasks();
+  if (viewId === "activity") loadActivity();
+  if (viewId === "settings") renderSettingsPanel();
+}
+
+function autoSizeTextarea(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(140, el.scrollHeight) + "px";
+}
+
+function setupFloatingDockDrag() {
+  const dock = document.getElementById("floating-dock");
+  const handle = document.getElementById("dock-drag-handle");
+  let dragging = false, ox = 0, oy = 0;
+
+  handle.addEventListener("mousedown", (e) => {
+    if (e.target.closest("button")) return;
+    dragging = true;
+    const rect = dock.getBoundingClientRect();
+    ox = e.clientX - rect.left;
+    oy = e.clientY - rect.top;
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    dock.style.right = "auto";
+    dock.style.bottom = "auto";
+    dock.style.left = Math.max(8, Math.min(window.innerWidth - dock.offsetWidth - 8, e.clientX - ox)) + "px";
+    dock.style.top = Math.max(8, Math.min(window.innerHeight - dock.offsetHeight - 8, e.clientY - oy)) + "px";
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+}
+
+function bindUI() {
+  // Primary nav
+  document.querySelectorAll(".nav-item[data-view]").forEach((btn) => {
     btn.addEventListener("click", () => switchView(btn.dataset.view));
   });
 
-  document.getElementById("btn-refresh").onclick = () => {
-    refreshAll();
-    loadConversations();
-    toast("Refreshed live engine status.");
+  // Topbar & companion controls
+  document.getElementById("btn-toggle-history").onclick = () => store.set({ historyOpen: !store.state.historyOpen });
+  document.getElementById("btn-compact-companion").onclick = () => store.set({ companionCompact: !store.state.companionCompact });
+  document.getElementById("btn-toggle-companion-dock").onclick = () => store.set({ dockOpen: !store.state.dockOpen });
+  document.getElementById("btn-dock-hide").onclick = () => store.set({ dockOpen: false });
+  document.getElementById("btn-dock-expand").onclick = () => {
+    store.set({ dockOpen: false });
+    switchView("home");
+    document.getElementById("chat-input").focus();
   };
+  document.getElementById("btn-dismiss-diagnostic").onclick = () => store.set({ diagnosticNotice: "" });
 
+  // Emergency stop
   document.getElementById("btn-emergency-stop").onclick = async () => {
-    await api("/api/v1/emergency-stop", { method: "POST", body: { reason: "User clicked Emergency Stop" } });
-    toast("EMERGENCY STOP triggered.");
-    await refreshAll();
-    await loadTasks();
+    await stopGeneration();
+    await apiRequest("/api/v1/emergency-stop", { method: "POST", body: { reason: "User clicked Stop All" } });
+    toast("Emergency Stop activated.");
+    await refreshStatus();
   };
-
   document.getElementById("btn-reset-emergency").onclick = async () => {
-    await api("/api/v1/emergency-stop/reset", { method: "POST", body: {} });
-    toast("Emergency Stop reset.");
-    await refreshAll();
+    await apiRequest("/api/v1/emergency-stop/reset", { method: "POST", body: {} });
+    toast("Normal operation resumed.");
+    await refreshStatus();
   };
 
+  // Conversations
   document.getElementById("btn-new-conv").onclick = async () => {
-    const res = await api("/api/v1/conversations", { method: "POST", body: { title: "New Conversation" } });
-    state.activeConvId = res.conversation.id;
+    const res = await apiRequest("/api/v1/conversations", { method: "POST", body: { title: "New Conversation" } });
+    store.set({ activeConvId: res.conversation.id });
     await loadConversations();
+    document.getElementById("chat-input").focus();
   };
 
   document.getElementById("conv-list").addEventListener("click", async (e) => {
-    const delBtn = e.target.closest("button[data-del]");
-    if (delBtn) {
+    const del = e.target.closest("button[data-del-conv]");
+    if (del) {
       e.stopPropagation();
-      const id = delBtn.dataset.del;
-      await api(`/api/v1/conversations/${id}`, { method: "DELETE" });
-      if (state.activeConvId === id) state.activeConvId = null;
+      const id = del.dataset.delConv;
+      await apiRequest(`/api/v1/conversations/${id}`, { method: "DELETE" });
+      if (store.state.activeConvId === id) store.set({ activeConvId: null });
       await loadConversations();
       return;
     }
-    const item = e.target.closest(".conv-item");
+    const item = e.target.closest(".conv-item[data-conv]");
     if (item) {
-      state.activeConvId = item.dataset.id;
-      renderConversationList();
-      await loadMessages(state.activeConvId);
+      store.set({ activeConvId: item.dataset.conv });
+      await loadMessages(item.dataset.conv);
     }
   });
 
-  document.getElementById("chat-form").addEventListener("submit", handleSendMessage);
-  document.getElementById("chat-input").addEventListener("keydown", (e) => {
+  // Message actions (Copy, Speak, Retry)
+  document.getElementById("messages-viewport").addEventListener("click", async (e) => {
+    const copyBtn = e.target.closest("button[data-copy-msg]");
+    if (copyBtn) {
+      const m = store.state.messages.find((x) => x.id === copyBtn.dataset.copyMsg);
+      if (m && navigator.clipboard) {
+        await navigator.clipboard.writeText(m.content);
+        toast("Response copied.");
+      }
+      return;
+    }
+    const speakBtn = e.target.closest("button[data-speak-msg]");
+    if (speakBtn) {
+      const m = store.state.messages.find((x) => x.id === speakBtn.dataset.speakMsg);
+      if (m) voice.speak(m.content);
+      return;
+    }
+    const retryBtn = e.target.closest("button[data-retry-msg]");
+    if (retryBtn) {
+      await retryAssistantMessage(retryBtn.dataset.retryMsg);
+    }
+  });
+
+  // Composer input & attachments
+  const chatInput = document.getElementById("chat-input");
+  chatInput.addEventListener("input", () => autoSizeTextarea(chatInput));
+  chatInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      document.getElementById("chat-form").requestSubmit();
+      sendMessage();
+    }
+  });
+  document.getElementById("btn-send").onclick = () => sendMessage();
+  document.getElementById("btn-stop-gen").onclick = () => stopGeneration();
+  document.getElementById("btn-interrupt-speech").onclick = () => voice.interrupt("User clicked Interrupt");
+  document.getElementById("btn-header-interrupt").onclick = async () => {
+    if (store.state.isGenerating) await stopGeneration();
+    else await voice.interrupt("User clicked header Interrupt");
+  };
+
+  // Voice buttons
+  document.getElementById("btn-mic").onclick = () => voice.toggleListening();
+  document.getElementById("btn-dock-mic").onclick = () => voice.toggleListening();
+  document.getElementById("btn-wake-toggle").onclick = () => voice.toggleWakeWord();
+
+  // Dock input connected to exact same session
+  const dockInput = document.getElementById("dock-input");
+  const sendFromDock = () => {
+    const txt = dockInput.value.trim();
+    if (!txt) return;
+    dockInput.value = "";
+    sendMessage(txt);
+  };
+  document.getElementById("btn-dock-send").onclick = sendFromDock;
+  dockInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendFromDock();
     }
   });
 
-  document.querySelectorAll(".chip-btn[data-insert]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const inp = document.getElementById("chat-input");
-      inp.value = btn.dataset.insert;
-      inp.focus();
+  // File attachment reader (real content attached to prompt)
+  const fileInput = document.getElementById("file-input");
+  document.getElementById("btn-attach").onclick = () => fileInput.click();
+  fileInput.addEventListener("change", async () => {
+    const next = [...store.state.attachments];
+    for (const file of Array.from(fileInput.files || []).slice(0, 5)) {
+      if (file.size > 256 * 1024) {
+        toast(`Skipped ${file.name} (max 256 KB for direct context attachment).`);
+        continue;
+      }
+      const content = await file.text();
+      next.push({ name: file.name, size: file.size, mime: file.type || "text/plain", content });
+    }
+    fileInput.value = "";
+    store.set({ attachments: next });
+    renderAttachments();
+  });
+
+  document.getElementById("attachment-bar").addEventListener("click", (e) => {
+    const rm = e.target.closest("button[data-rm-att]");
+    if (!rm) return;
+    const idx = Number(rm.dataset.rmAtt);
+    const next = store.state.attachments.filter((_, i) => i !== idx);
+    store.set({ attachments: next });
+    renderAttachments();
+  });
+
+  document.querySelectorAll(".tool-chip[data-insert]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      chatInput.value = chip.dataset.insert;
+      chatInput.focus();
     });
   });
 
-  const doInterrupt = async () => {
-    const res = await api("/api/v1/voice/interrupt", { method: "POST", body: {} });
-    toast(`Interrupted (${res.previous_state} → ${res.new_state}).`);
-    await refreshAll();
-  };
-  document.getElementById("btn-interrupt").onclick = doInterrupt;
-  document.getElementById("btn-companion-interrupt").onclick = doInterrupt;
-
-  document.getElementById("ctrl-comp-size").oninput = (e) => {
-    document.getElementById("val-comp-size").textContent = e.target.value;
-  };
-  document.getElementById("ctrl-comp-alpha").oninput = (e) => {
-    document.getElementById("val-comp-alpha").textContent = Number(e.target.value).toFixed(2);
-  };
-  document.getElementById("btn-save-companion").onclick = () =>
-    saveSettingsPatch({
-      "appearance.companion_size": Number(document.getElementById("ctrl-comp-size").value),
-      "appearance.companion_transparency": Number(document.getElementById("ctrl-comp-alpha").value),
-      "appearance.companion_always_on_top": document.getElementById("ctrl-comp-topmost").checked,
-      "appearance.reduced_animations": document.getElementById("ctrl-reduced-anim").checked,
-    });
-
-  document.getElementById("task-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    createTask(false);
-  });
-  document.getElementById("btn-create-run-task").onclick = () => createTask(true);
-  document.getElementById("task-filter").onchange = loadTasks;
-
-  document.getElementById("task-list").addEventListener("click", async (e) => {
-    const btn = e.target.closest("button[data-task-act]");
-    if (!btn) return;
-    const id = btn.dataset.id;
-    const act = btn.dataset.taskAct;
-    if (act === "run") await api(`/api/v1/tasks/${id}/run`, { method: "POST", body: { approved: false } });
-    if (act === "approve") await api(`/api/v1/tasks/${id}/run`, { method: "POST", body: { approved: true } });
-    if (act === "pause") await api(`/api/v1/tasks/${id}/pause`, { method: "POST", body: {} });
-    if (act === "cancel") await api(`/api/v1/tasks/${id}/cancel`, { method: "POST", body: {} });
-    await loadTasks();
-    await refreshAll();
-  });
-
+  // Memory view
   document.getElementById("memory-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const errEl = document.getElementById("mem-form-error");
     errEl.classList.add("hidden");
     try {
-      const tags = document
-        .getElementById("mem-tags")
-        .value.split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
-      await api("/api/v1/memories", {
+      const tags = document.getElementById("mem-tags").value.split(",").map((x) => x.trim()).filter(Boolean);
+      await apiRequest("/api/v1/memories", {
         method: "POST",
         body: {
           category: document.getElementById("mem-category").value,
@@ -783,80 +1102,139 @@ function bindEvents() {
           tags,
         },
       });
-      document.getElementById("memory-form").reset();
-      toast("Memory stored in SQLite.");
+      e.target.reset();
+      toast("Memory saved.");
       await loadMemories();
     } catch (err) {
       errEl.textContent = err.message;
       errEl.classList.remove("hidden");
     }
   });
-
   document.getElementById("mem-filter-cat").onchange = loadMemories;
   document.getElementById("mem-search").oninput = loadMemories;
-  document.getElementById("mem-ctrl-enabled").onchange = (e) =>
-    saveSettingsPatch({ "memory.enabled": e.target.checked });
-  document.getElementById("mem-ctrl-paused").onchange = (e) =>
-    saveSettingsPatch({ "memory.learning_paused": e.target.checked });
-
+  document.getElementById("mem-ctrl-enabled").onchange = (e) => saveSettings({ "memory.enabled": e.target.checked });
+  document.getElementById("mem-ctrl-paused").onchange = (e) => saveSettings({ "memory.learning_paused": e.target.checked });
   document.getElementById("btn-export-mem").onclick = async () => {
-    const data = await api("/api/v1/memories/export");
+    const data = await apiRequest("/api/v1/memories/export");
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "ryna-memories-export.json";
+    a.download = "ryna-memories.json";
     a.click();
     toast(`Exported ${data.count} memories.`);
   };
-
   document.getElementById("btn-clear-mem").onclick = async () => {
-    if (!confirm("Permanently clear all stored RYNA memories?")) return;
-    const res = await api("/api/v1/memories", { method: "DELETE" });
+    if (!confirm("Permanently clear all saved memories?")) return;
+    const res = await apiRequest("/api/v1/memories", { method: "DELETE" });
     toast(`Cleared ${res.deleted_count} memories.`);
     await loadMemories();
   };
-
   document.getElementById("memory-list").addEventListener("click", async (e) => {
-    const delBtn = e.target.closest("button[data-mem-del]");
-    if (delBtn) {
-      await api(`/api/v1/memories/${delBtn.dataset.memDel}`, { method: "DELETE" });
-      toast("Memory deleted.");
+    const del = e.target.closest("button[data-mem-del]");
+    if (del) {
+      await apiRequest(`/api/v1/memories/${del.dataset.memDel}`, { method: "DELETE" });
       await loadMemories();
       return;
     }
-    const editBtn = e.target.closest("button[data-mem-edit]");
-    if (editBtn) {
-      const mem = state.memories.find((m) => m.id === editBtn.dataset.memEdit);
-      if (!mem) return;
-      const next = prompt("Edit memory content:", mem.content);
-      if (next !== null && next.trim()) {
+    const edit = e.target.closest("button[data-mem-edit]");
+    if (edit) {
+      const m = store.state.memories.find((x) => x.id === edit.dataset.memEdit);
+      if (!m) return;
+      const next = prompt("Edit memory:", m.content);
+      if (next && next.trim()) {
         try {
-          await api(`/api/v1/memories/${mem.id}`, { method: "PATCH", body: { content: next.trim() } });
-          toast("Memory updated.");
+          await apiRequest(`/api/v1/memories/${m.id}`, { method: "PATCH", body: { content: next.trim() } });
           await loadMemories();
         } catch (err) {
-          toast(`Update rejected: ${err.message}`);
+          toast(`Rejected: ${err.message}`);
         }
       }
     }
   });
 
-  document.getElementById("settings-nav").addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-scat]");
+  // Tasks view
+  const submitTask = async (autoRun) => {
+    const title = document.getElementById("task-title").value.trim();
+    const goal = document.getElementById("task-goal").value.trim();
+    if (!title || !goal) return;
+    await apiRequest("/api/v1/tasks", {
+      method: "POST",
+      body: {
+        title,
+        goal,
+        permission_level: Number(document.getElementById("task-perm").value),
+        requires_internet: document.getElementById("task-internet").checked,
+        auto_run: autoRun,
+      },
+    });
+    document.getElementById("task-form").reset();
+    toast(autoRun ? "Task created and run." : "Task queued.");
+    await loadTasks();
+  };
+  document.getElementById("task-form").addEventListener("submit", (e) => { e.preventDefault(); submitTask(false); });
+  document.getElementById("btn-create-run-task").onclick = () => submitTask(true);
+  document.getElementById("task-filter").onchange = loadTasks;
+  document.getElementById("task-list").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-task-act]");
     if (!btn) return;
-    state.activeSettingsCat = btn.dataset.scat;
-    renderSettingsCategory();
+    const { id, taskAct } = btn.dataset;
+    if (taskAct === "run") await apiRequest(`/api/v1/tasks/${id}/run`, { method: "POST", body: { approved: false } });
+    if (taskAct === "approve") await apiRequest(`/api/v1/tasks/${id}/run`, { method: "POST", body: { approved: true } });
+    if (taskAct === "retry") await apiRequest(`/api/v1/tasks/${id}/retry`, { method: "POST", body: { approved: false } });
+    if (taskAct === "pause") await apiRequest(`/api/v1/tasks/${id}/pause`, { method: "POST", body: {} });
+    if (taskAct === "cancel") await apiRequest(`/api/v1/tasks/${id}/cancel`, { method: "POST", body: {} });
+    await loadTasks();
+    await refreshStatus();
   });
+
+  // Activity view
+  document.getElementById("activity-filter").onchange = loadActivity;
+  document.getElementById("btn-refresh-activity").onclick = loadActivity;
+  document.getElementById("btn-clear-activity").onclick = async () => {
+    await apiRequest("/api/v1/activity", { method: "DELETE" });
+    await loadActivity();
+    toast("Activity log cleared.");
+  };
+
+  // Settings tab switching
+  document.getElementById("settings-nav").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-stab]");
+    if (!btn) return;
+    store.set({ activeSettingsTab: btn.dataset.stab });
+    renderSettingsPanel();
+  });
+
+  // Keyboard shortcuts
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (store.state.isGenerating) stopGeneration();
+      else if (store.state.voice.isSpeaking) voice.interrupt("Pressed Escape");
+      else if (store.state.voice.isListening) voice.stopListening();
+    } else if (e.ctrlKey && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      document.getElementById("btn-new-conv").click();
+    } else if (e.ctrlKey && e.key.toLowerCase() === "m") {
+      e.preventDefault();
+      voice.toggleListening();
+    } else if (e.altKey && ["1", "2", "3", "4", "5"].includes(e.key)) {
+      e.preventDefault();
+      switchView(["home", "memory", "tasks", "activity", "settings"][Number(e.key) - 1]);
+    }
+  });
+
+  setupFloatingDockDrag();
 }
 
 /* ---------- Boot ---------- */
 async function boot() {
-  initCompanionButtons();
-  bindEvents();
-  await refreshAll();
+  store.subscribe(renderState);
+  bindUI();
+  companion.start();
+  await voice.init();
+  await refreshStatus();
   await loadConversations();
-  animateCompanion();
-  setInterval(refreshAll, 15000);
+  connectEventStream();
+  setInterval(refreshStatus, 20000);
 }
 
 boot();
