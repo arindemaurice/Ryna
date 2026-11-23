@@ -281,7 +281,7 @@ class RynaDesktopApp:
         title_box.pack(side="left", fill="x", expand=True)
         tk.Label(title_box, text="RYNA", fg=TEXT_MAIN, bg="#0a162b", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         self._hud_status_var = tk.StringVar(value="● Detecting mode…")
-        self._hud_status_lbl = tk.Label(title_box, textvariable=self._hud_status_var, fg="#34d399", bg="#0a162b", font=("Segoe UI", 8.5))
+        self._hud_status_lbl = tk.Label(title_box, textvariable=self._hud_status_var, fg="#34d399", bg="#0a162b", font=("Segoe UI", 9))
         self._hud_status_lbl.pack(anchor="w")
 
         tk.Button(hdr, text="⚙", command=self._open_control_center, bg="#0a162b", fg=TEXT_MUTED, relief="flat", font=("Segoe UI", 10), cursor="hand2").pack(side="right", padx=2)
@@ -296,7 +296,7 @@ class RynaDesktopApp:
             fg=TEXT_MAIN,
             wrap="word",
             relief="flat",
-            font=("Segoe UI", 9.5),
+            font=("Segoe UI", 10),
             padx=6,
             pady=6,
             state="disabled",
@@ -307,12 +307,12 @@ class RynaDesktopApp:
         self.chat_text.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        self.chat_text.tag_configure("user_lbl", foreground="#7dd3fc", font=("Segoe UI", 8.5, "bold"), justify="right")
+        self.chat_text.tag_configure("user_lbl", foreground="#7dd3fc", font=("Segoe UI", 8, "bold"), justify="right")
         self.chat_text.tag_configure("user_msg", foreground="#ffffff", background="#15325c", lmargin1=55, lmargin2=55, rmargin=6, spacing1=2, spacing3=8)
-        self.chat_text.tag_configure("ryna_lbl", foreground=CYAN, font=("Segoe UI", 8.5, "bold"))
+        self.chat_text.tag_configure("ryna_lbl", foreground=CYAN, font=("Segoe UI", 8, "bold"))
         self.chat_text.tag_configure("ryna_msg", foreground=TEXT_MAIN, background=BG_CARD, lmargin1=6, lmargin2=6, rmargin=28, spacing1=2, spacing3=8)
-        self.chat_text.tag_configure("card_msg", foreground="#a7f3d0", background="#0c2430", lmargin1=10, lmargin2=10, rmargin=20, spacing1=2, spacing3=8, font=("Consolas", 8.5))
-        self.chat_text.tag_configure("sys_msg", foreground="#fde68a", lmargin1=6, spacing3=8, font=("Segoe UI", 8.5))
+        self.chat_text.tag_configure("card_msg", foreground="#a7f3d0", background="#0c2430", lmargin1=10, lmargin2=10, rmargin=20, spacing1=2, spacing3=8, font=("Consolas", 9))
+        self.chat_text.tag_configure("sys_msg", foreground="#fde68a", lmargin1=6, spacing3=8, font=("Segoe UI", 9))
 
         # Quick Real Action Pills (matching reference screenshot!)
         pill_row = tk.Frame(outer, bg=BG_GLASS, padx=10, pady=4)
