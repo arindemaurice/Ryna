@@ -39,7 +39,7 @@ $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $voices = @($s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name })
 $pref = $voices | Where-Object { $_ -match 'Zira' } | Select-Object -First 1
 if ($pref) { $s.SelectVoice($pref) }
-$s.Rate = 1
+$s.Rate = 0
 Register-ObjectEvent -InputObject $s -EventName SpeakCompleted -Action {
     [Console]::Out.WriteLine("DONE")
     [Console]::Out.Flush()
@@ -261,7 +261,7 @@ class VoiceManager:
             saved_v = str(self.db.get_setting("voice.selected_voice", "")).strip()
             if saved_v:
                 self._send_sapi_cmd(f"VOICE:{saved_v}")
-        spd = float(speed if speed is not None else self.db.get_setting("voice.speech_speed", 1.1))
+        spd = float(speed if speed is not None else self.db.get_setting("voice.speech_speed", 1.0))
         rate = max(-6, min(6, int(round((spd - 1.0) * 5))))
         self._send_sapi_cmd(f"RATE:{rate}")
 
@@ -297,10 +297,14 @@ class VoiceManager:
             self.enqueue_sentence(part, voice_name=chosen, speed=speed, on_all_done=on_finished if idx == len(parts) - 1 else None)
         return {"speaking": True, "engine": "windows-sapi-warm", "voice": chosen, "sentences": len(parts)}
 
-    def listen_native(self, on_level: Callable[[float], None] | None = None) -> str:
+    def listen_native(
+        self,
+        on_level: Callable[[float], None] | None = None,
+        on_partial: Callable[[str], None] | None = None,
+    ) -> str:
         self.set_state("listening")
         try:
-            return self.recognizer.listen_once(on_level=on_level)
+            return self.recognizer.listen_once(on_level=on_level, on_partial=on_partial)
         finally:
             if self.get_state() == "listening":
                 self.set_state("idle")

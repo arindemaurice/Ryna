@@ -1,4 +1,6 @@
-"""Native Windows microphone capture (sounddevice + numpy VAD) and 100% offline STT (faster-whisper)."""
+"""Native Windows microphone capture (sounddevice + numpy VAD) with live partial dictation
+and 100% offline transcription via faster-whisper.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +12,6 @@ import numpy as np
 
 
 class NativeSpeechRecognizer:
-    """Records speech from the real Windows microphone with automatic silence turn-detection
-    and transcribes locally using faster-whisper (100% offline once model is cached).
-    """
-
     def __init__(self, model_size: str = "tiny.en") -> None:
         self.model_size = model_size
         self._model: Any = None
@@ -54,20 +52,23 @@ class NativeSpeechRecognizer:
     def listen_once(
         self,
         on_level: Callable[[float], None] | None = None,
-        max_seconds: float = 10.0,
-        silence_seconds: float = 0.65,
-        energy_threshold: float = 0.013,
+        on_partial: Callable[[str], None] | None = None,
+        max_seconds: float = 14.0,
+        silence_seconds: float = 0.85,
+        energy_threshold: float = 0.012,
         sample_rate: int = 16000,
     ) -> str:
-        """Listen to real microphone until user finishes speaking, then transcribe locally."""
+        """Listen to real mic, emit live partial dictation previews, and return final transcript."""
         import sounddevice as sd
 
         self._stop_event.clear()
         self._recording = True
         frames: list[np.ndarray] = []
+        frames_lock = threading.Lock()
         speech_started = False
         last_voice_ts = time.monotonic()
         start_ts = last_voice_ts
+        last_partial_ts = start_ts
 
         def _callback(indata: np.ndarray, _frame_count: int, _time_info: Any, _status: Any) -> None:
             nonlocal speech_started, last_voice_ts
@@ -78,7 +79,8 @@ class NativeSpeechRecognizer:
                     on_level(min(1.0, rms * 18.0))
                 except Exception:
                     pass
-            frames.append(mono)
+            with frames_lock:
+                frames.append(mono)
             now = time.monotonic()
             if rms >= energy_threshold:
                 speech_started = True
@@ -89,11 +91,25 @@ class NativeSpeechRecognizer:
                 while not self._stop_event.is_set():
                     time.sleep(0.06)
                     now = time.monotonic()
+                    # Emit live partial dictation preview every ~1.2s while speaking
+                    if on_partial and speech_started and (now - last_partial_ts) >= 1.25:
+                        last_partial_ts = now
+                        with frames_lock:
+                            snap = np.concatenate(frames).astype(np.float32) if frames else None
+                        if snap is not None and len(snap) >= sample_rate // 2:
+                            try:
+                                segs, _ = self._get_model().transcribe(snap, language="en", vad_filter=True, beam_size=1)
+                                partial = " ".join(s.text.strip() for s in segs if s.text.strip()).strip()
+                                if partial:
+                                    on_partial(partial)
+                            except Exception:
+                                pass
+
                     if now - start_ts >= max_seconds:
                         break
                     if speech_started and (now - last_voice_ts) >= silence_seconds:
                         break
-                    if not speech_started and (now - start_ts) >= 5.0:
+                    if not speech_started and (now - start_ts) >= 6.0:
                         break
         finally:
             self._recording = False
@@ -103,16 +119,11 @@ class NativeSpeechRecognizer:
                 except Exception:
                     pass
 
-        if not frames or not speech_started:
-            return ""
+        with frames_lock:
+            if not frames or not speech_started:
+                return ""
+            audio = np.concatenate(frames).astype(np.float32)
 
-        audio = np.concatenate(frames).astype(np.float32)
         model = self._get_model()
         segments, _info = model.transcribe(audio, language="en", vad_filter=True, beam_size=1)
-        text = " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
-        return text
-
-    def transcribe_array(self, audio_16k_f32: np.ndarray) -> str:
-        model = self._get_model()
-        segments, _info = model.transcribe(audio_16k_f32.astype(np.float32), language="en", vad_filter=True, beam_size=1)
         return " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
