@@ -1,55 +1,47 @@
-# RYNA — Autonomous Personal AI Assistant
+# RYNA — Native Windows Desktop Robot & Autonomous Personal AI
 
 **Same RYNA. Same identity. Same memory. Same context. Online or offline.**
 
-RYNA is a unified personal AI assistant, desktop robot companion, voice assistant, and autonomous agent built on a clean, modular, offline-first hybrid architecture (Python AI/Agent core + SQLite + Windows Desktop Robot Host + Flutter UI & Rust Core foundations).
+RYNA lives directly on your Windows desktop as the isolated futuristic mini humanoid robot from your authoritative design (`app/desktop/assets/ryna_robot.png`) — with a floating cyan speech bubble, a translucent dark-navy glass HUD panel, a Windows System Tray icon, real offline & online voice conversation with instant barge-in interruption, local Ollama + Cloud AI routing, persistent 9-category memory, 8-state crash-recoverable tasks, live web search, screen capture, and permission-gated Windows app control.
 
 ---
 
-## Authoritative Robot Asset Status
-Per Section 4 (*The Robot is RYNA*), RYNA **never** fabricates a replacement sphere or generic mascot. Place the isolated transparent PNG of your supplied RYNA robot at:
+## What Runs Natively on Windows (No Browser Website Required)
 
-```text
-app/desktop/assets/ryna_robot.png
-```
-
-(Or install/crop it from a screenshot using `python scripts/isolate_robot.py <path_to_image> [--crop x1,y1,x2,y2]`.)
-
----
-
-## Key Capabilities Implemented & Verified
-
-- **Complete Research Preservation**: All 37 specification domains are tracked honestly in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
-- **Hybrid Online/Offline AI**: Local Ollama token-by-token streaming (`qwen3.5:4b`, `qwen2.5:3b`, `qwen2.5:1.5b` supported immediately) + Cloud OpenAI-compatible, Anthropic, and Gemini APIs with `.env`-only credentials and privacy filtering.
-- **Voice & Instant Barge-In**: Live microphone waveform metering, browser `SpeechRecognition`, configurable `"Hey Ryna"` wake word, dual TTS (Browser `SpeechSynthesis` + **100% offline Windows SAPI**), and instant speech/generation interruption.
-- **9-Category Persistent Memory**: Deduplication, subject-key conflict resolution, confidence/source/time tracking, expiration, export/import, and automatic secret rejection.
-- **8-State Persistent Task Engine & Crash Recovery**: `planned`, `running`, `waiting`, `completed`, `failed`, `paused`, `cancelled`, `recovering` — pauses internet steps offline and safely recovers interrupted tasks on restart.
-- **3-Tier Security & Computer Control**: Automatic / Confirmation Required / Restricted policy, Emergency Stop, loopback-only `127.0.0.1` binding, untrusted webpage prompt-injection isolation, Win32 foreground window inspection, and opt-in allowlisted app launching.
-- **Hot SQLite Backup & Restore**: Built-in consistent `sqlite3.backup` endpoint (`POST /api/v1/database/backup`).
+- **Authoritative Isolated Robot Asset**: `app/desktop/assets/ryna_robot.png` (385×512 transparent RGBA), `ryna_head.png`, and `ryna_icon.ico`.
+- **Desktop Presence (`app/desktop/robot_window.py`)**:
+  - Transparent borderless floating RYNA robot with smooth hover & 13-state energy halo, drag/reposition with persisted coordinates, edge-awareness, resize, always-on-top, and `pystray` Windows System Tray integration.
+  - Floating cyan-bordered speech bubble directly beside RYNA showing live listening/speaking/status updates.
+  - Floating dark-navy glass HUD panel (click RYNA to toggle) with live streaming AI chat, Action Cards, quick action pills (`Open Browser`, `Search Web`, `Check Time`, `Screen`, `More`), native **Mic (`🎤`)**, **Interrupt (`■`)**, and native **Control Center** (Memory, Tasks, Settings, DB Backup).
+- **100% Offline + Online Native Voice (`voice/native_voice.py` + `voice/manager.py`)**:
+  - Real Windows microphone capture (`sounddevice` + `numpy` RMS VAD + automatic silence turn-detection).
+  - Real **100% offline speech recognition** (`faster-whisper` `tiny.en` pre-cached locally).
+  - Real **100% offline sentence-streaming speech synthesis** via Windows SAPI (`Microsoft Zira Desktop` / `Microsoft David Desktop`).
+  - Instant barge-in interruption (clicking Mic while she speaks, clicking Interrupt `■`, clicking the speech bubble, or pressing `Esc` immediately stops speech and listens for your new input).
+- **Hybrid AI Brain (`ai/`)**:
+  - Real local Ollama token-by-token streaming (`qwen3.5:4b`, `qwen2.5:3b`, `qwen2.5:1.5b`) + Cloud OpenAI-compatible, Anthropic, and Gemini APIs with `.env`-only credentials and privacy filtering.
+  - Automatic 5-state operating mode detection (`Online · Cloud AI`, `Online · Local AI`, `Offline · Local AI`, `Offline · Limited`, `AI Unavailable`).
+- **Real Computer Control, Vision & Online Search**:
+  - Natural spoken or typed actions: `"Open Spotify"`, `"Open Chrome"`, `"Open VS Code"`, `"What time is it?"`, `"Look at my screen"` (`mss` capture + active window title), `"Search the web for ..."` (live DuckDuckGo search with untrusted-content isolation), `"Remember that ..."`.
 
 ---
 
-## Quick Start (Windows)
+## How to Run RYNA
 
 ```powershell
-# 1. Check prerequisites & robot asset status
-powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
+# Launch RYNA directly onto your Windows desktop (robot + speech bubble + glass HUD + system tray)
+powershell -ExecutionPolicy Bypass -File scripts\run.ps1
 
-# 2. Initialize .env and SQLite database
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
-
-# 3. Launch RYNA conversation UI
-powershell -ExecutionPolicy Bypass -File scripts\run.ps1 -OpenUI
-
-# 4. Launch RYNA with native transparent Windows Desktop Robot host
-powershell -ExecutionPolicy Bypass -File scripts\run.ps1 -OpenUI -Robot
-
-# 5. Run automated tests
+# Run all automated tests (Python + Rust + Flutter when available)
 powershell -ExecutionPolicy Bypass -File scripts\test.ps1
 
-# 6. Optional: Manage Windows user-login startup
+# Optional: Enable / disable Windows login auto-start
 powershell -ExecutionPolicy Bypass -File scripts\startup_windows.ps1 -Action status
+powershell -ExecutionPolicy Bypass -File scripts\startup_windows.ps1 -Action enable
+
+# Optional: Run headless engine only or open secondary browser UI
+powershell -ExecutionPolicy Bypass -File scripts\run.ps1 -Headless
+powershell -ExecutionPolicy Bypass -File scripts\run.ps1 -WebUI
 ```
 
-## Architecture & Limitations
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for the exact implementation status, dependencies, and honest limitations of every subsystem.
+See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for the complete 37-domain requirements & verification tracker, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system structure.

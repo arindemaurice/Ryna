@@ -1,47 +1,115 @@
-"""Helper utility to install/crop the user's supplied RYNA robot reference screenshot
-into the authoritative transparent asset path: app/desktop/assets/ryna_robot.png.
-
-Usage:
-    python scripts/isolate_robot.py <source_image_path> [--crop x1,y1,x2,y2]
+"""Extract clean transparent RYNA robot PNG, head avatar PNG, and Windows .ico
+from a chroma-keyed (magenta #FF00FF) isolated robot image with edge despill.
 """
 
 from __future__ import annotations
 
 import argparse
-import shutil
+from collections import deque
 from pathlib import Path
 
-TARGET = Path(__file__).resolve().parents[1] / "app" / "desktop" / "assets" / "ryna_robot.png"
+import numpy as np
+from PIL import Image
+
+ASSETS_DIR = Path(__file__).resolve().parents[1] / "app" / "desktop" / "assets"
+
+
+def extract_magenta_to_rgba(src_path: Path, out_robot: Path, out_head: Path, out_ico: Path) -> None:
+    img = Image.open(src_path).convert("RGBA")
+    arr = np.array(img, dtype=np.float32)
+    h, w, _ = arr.shape
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+
+    # Measure magenta-ness: high R and B, low G
+    magenta_score = np.minimum(r, b) - g
+    is_bg_candidate = (magenta_score > 55.0) & (r > 120.0) & (b > 120.0) & (g < 150.0)
+
+    # Flood-fill from image border so we only remove exterior background
+    visited = np.zeros((h, w), dtype=bool)
+    q: deque[tuple[int, int]] = deque()
+    for x in range(w):
+        if is_bg_candidate[0, x]:
+            visited[0, x] = True
+            q.append((0, x))
+        if is_bg_candidate[h - 1, x]:
+            visited[h - 1, x] = True
+            q.append((h - 1, x))
+    for y in range(h):
+        if is_bg_candidate[y, 0] and not visited[y, 0]:
+            visited[y, 0] = True
+            q.append((y, 0))
+        if is_bg_candidate[y, w - 1] and not visited[y, w - 1]:
+            visited[y, w - 1] = True
+            q.append((y, w - 1))
+
+    while q:
+        cy, cx = q.popleft()
+        for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+            if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx] and is_bg_candidate[ny, nx]:
+                visited[ny, nx] = True
+                q.append((ny, nx))
+
+    alpha = np.where(visited, 0.0, 255.0)
+
+    # Soften & despill boundary fringe pixels adjacent to transparent background
+    padded = np.pad(visited, 1, mode="constant", constant_values=True)
+    near_bg = (
+        padded[:-2, 1:-1] | padded[2:, 1:-1] | padded[1:-1, :-2] | padded[1:-1, 2:]
+        | padded[:-2, :-2] | padded[:-2, 2:] | padded[2:, :-2] | padded[2:, 2:]
+    )
+    fringe = (~visited) & near_bg & (magenta_score > 12.0)
+    # Feather alpha on magenta-tinted fringe pixels
+    alpha = np.where(fringe, np.clip(255.0 - magenta_score * 3.0, 0.0, 255.0), alpha)
+
+    # Despill any remaining magenta cast along edges (clamp R & B toward G/neighbor luminance)
+    edge_despill = (~visited) & (magenta_score > 18.0)
+    new_r = np.where(edge_despill, np.minimum(r, g + 16.0), r)
+    new_b = np.where(edge_despill, np.minimum(b, g + 28.0), b)
+
+    out_arr = np.stack([new_r, g, new_b, alpha], axis=-1).clip(0, 255).astype(np.uint8)
+    rgba = Image.fromarray(out_arr, mode="RGBA")
+
+    # Tightly crop around non-transparent RYNA robot with small padding
+    bbox = rgba.getbbox()
+    if bbox:
+        pad = 12
+        x0, y0, x1, y1 = max(0, bbox[0] - pad), max(0, bbox[1] - pad), min(w, bbox[2] + pad), min(h, bbox[3] + pad)
+        rgba = rgba.crop((x0, y0, x1, y1))
+
+    out_robot.parent.mkdir(parents=True, exist_ok=True)
+    rgba.thumbnail((512, 512), Image.Resampling.LANCZOS)
+    rgba.save(out_robot, format="PNG")
+
+    # Create clean cropped head avatar for HUD header & system tray icon
+    rw, rh = rgba.size
+    head_box = (int(rw * 0.36), 0, rw, int(rh * 0.43))
+    head = rgba.crop(head_box)
+    hb = head.getbbox()
+    if hb:
+        head = head.crop(hb)
+    # Center inside a square 128x128 transparent canvas
+    side = max(head.size) + 12
+    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    square.paste(head, ((side - head.width) // 2, (side - head.height) // 2), head)
+    square_128 = square.resize((128, 128), Image.Resampling.LANCZOS)
+    square_128.save(out_head, format="PNG")
+    square_128.save(out_ico, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128)])
+
+    print(f"Extracted RYNA robot PNG : {out_robot} ({rgba.size})")
+    print(f"Extracted RYNA head PNG  : {out_head} ({square_128.size})")
+    print(f"Extracted RYNA tray ICO  : {out_ico}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Install or crop authoritative RYNA robot PNG asset.")
-    parser.add_argument("source", help="Path to user-supplied robot image/screenshot")
-    parser.add_argument("--crop", default=None, help="Optional crop box x1,y1,x2,y2 (requires Pillow)")
+    parser = argparse.ArgumentParser(description="Extract transparent RYNA robot assets from chroma-keyed image.")
+    parser.add_argument("source", help="Path to source magenta-background robot image")
     args = parser.parse_args()
-
-    src = Path(args.source).resolve()
-    if not src.is_file():
-        print(f"Error: source image not found: {src}")
-        return 1
-
-    TARGET.parent.mkdir(parents=True, exist_ok=True)
-    if args.crop:
-        try:
-            from PIL import Image  # type: ignore[import-not-found]
-        except ImportError:
-            print("Error: Pillow is required for --crop (pip install Pillow).")
-            return 1
-        box = tuple(int(v.strip()) for v in args.crop.split(","))
-        if len(box) != 4:
-            print("Error: --crop must be 4 integers: x1,y1,x2,y2")
-            return 1
-        img = Image.open(src).convert("RGBA").crop(box)
-        img.save(TARGET, format="PNG")
-    else:
-        shutil.copy2(src, TARGET)
-
-    print(f"Installed authoritative RYNA robot asset -> {TARGET}")
+    extract_magenta_to_rgba(
+        Path(args.source),
+        ASSETS_DIR / "ryna_robot.png",
+        ASSETS_DIR / "ryna_head.png",
+        ASSETS_DIR / "ryna_icon.ico",
+    )
     return 0
 
 

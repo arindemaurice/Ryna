@@ -60,7 +60,13 @@ class TestServerE2E(unittest.TestCase):
         code, st = self._req("GET", "/api/v1/status")
         self.assertEqual(code, 200)
         self.assertEqual(st["operating_mode"]["id"], "offline_limited")
-        self.assertFalse(st["robot_asset"]["available"])  # Honest missing asset status
+        self.assertTrue(st["robot_asset"]["available"])
+
+        # Real natural time action works offline
+        code, time_res = self._req("POST", "/api/v1/chat", {"message": "what time is it"})
+        self.assertEqual(code, 200)
+        self.assertTrue(time_res["ai_available"])
+        self.assertIn("action_card", time_res["assistant_message"]["metadata"])
 
         # Tool slash command + SSE stream + attachment
         code, calc = self._req("POST", "/api/v1/chat", {"message": "/calc 11 * 9"})

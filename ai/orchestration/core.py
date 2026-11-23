@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,7 +65,7 @@ class RynaCore:
         self.db = RynaDatabase(self.config.db_path, self.config.default_settings)
         self.memory = MemoryEngine(self.db)
         self.permissions = PermissionEngine(self.db)
-        self.computer = ComputerController(self.db)
+        self.computer = ComputerController(self.db, screenshots_dir=self.config.data_dir / "screenshots")
         self.tools = ToolRegistry(self.config, self.db, self.computer)
         self.tasks = AgentTaskEngine(self.db, self.permissions, self.tools, connectivity_checker=self._check_online)
         self.ai = AIRouter(self.config, self.db, connectivity_checker=self._check_online)
@@ -218,11 +219,15 @@ class RynaCore:
         cmd, arg = parts[0].lower(), (parts[1].strip() if len(parts) > 1 else "")
         mapping = {
             "/calc": ("calculate", {"expression": arg}),
+            "/time": ("current_time", {}),
             "/diag": ("system_diagnostics", {}),
             "/find": ("file_search", {"query": arg}),
             "/read": ("file_read", {"path": arg}),
             "/note": ("create_note", {"title": arg[:48] or "Note", "content": arg}),
             "/window": ("active_window", {}),
+            "/screen": ("screen_capture", {}),
+            "/open": ("open_application", {"app": arg}),
+            "/search": ("web_search", {"query": arg}),
             "/fetch": ("web_fetch", {"url": arg}),
         }
         if cmd not in mapping:
@@ -243,6 +248,105 @@ class RynaCore:
         finally:
             self.set_robot_state("idle")
 
+    def _try_natural_action(self, text: str, conv_id: str, online: bool) -> dict[str, Any] | None:
+        """Execute verified real local/online actions when user gives natural spoken or typed commands."""
+        low = text.strip().lower().rstrip(".!?")
+        mode = "online" if online else "offline"
+
+        # 1. Time / Date check (works 100% offline)
+        if re.search(r"\b(what time is it|current time|check time|what('s| is) the time|what('s| is) today'?s? date)\b", low):
+            res = self.tools.execute("current_time", {})
+            reply = f"It's {res['time']} on {res['date']}."
+            self.record_activity("tool", "current_time", reply, "ok")
+            return self.db.add_message(
+                conv_id, "assistant", reply, provider="ryna_tool", model="current_time", mode="offline",
+                metadata={"action_card": {"title": "Local Time", "subtitle": res["date"], "value": res["time"]}},
+            )
+
+        # 2. Remember fact/preference into persistent memory
+        m_rem = re.match(r"^(?:please\s+)?remember\s+(?:that\s+)?(.+)$", text.strip(), re.IGNORECASE)
+        if m_rem:
+            fact = m_rem.group(1).strip()
+            try:
+                saved = self.memory.add("personal", fact, "confirmed_fact", source="conversation")
+                reply = f"Got it — I've saved that to memory: \"{saved['content']}\""
+                self.record_activity("memory", "memory_saved", f"Remembered: {fact[:80]}", "ok")
+                return self.db.add_message(
+                    conv_id, "assistant", reply, provider="ryna_memory", model="memory", mode="offline",
+                    metadata={"action_card": {"title": "Memory Saved", "subtitle": saved["category"], "value": saved["content"]}},
+                )
+            except Exception as exc:
+                return self.db.add_message(conv_id, "system", f"Could not save memory: {exc}", mode=mode)
+
+        # 3. Open allowlisted Windows application ("open spotify", "open chrome", "open browser", "open vs code", etc.)
+        m_open = re.match(r"^(?:please\s+)?(?:open|launch|start)\s+(spotify|chrome|google chrome|edge|microsoft edge|browser|vs code|vscode|notepad|calculator|explorer|file explorer|paint|settings|discord|whatsapp|word|excel)\b", low)
+        if m_open:
+            app_key = m_open.group(1).replace("google ", "").replace("microsoft ", "")
+            dec = self.permissions.evaluate("open_application", app_key)
+            if not dec.allowed:
+                return self.db.add_message(conv_id, "system", f"Launching {app_key} blocked: {dec.reason}", mode=mode)
+            self.set_robot_state("working")
+            try:
+                res = self.tools.execute("open_application", {"app": app_key})
+                reply = f"Opening {app_key.title()} now."
+                self.record_activity("tool", "open_application", f"Launched {app_key}.", "ok", res)
+                return self.db.add_message(
+                    conv_id, "assistant", reply, provider="ryna_computer", model="open_application", mode="offline",
+                    metadata={"action_card": {"title": f"Opened {app_key.title()}", "subtitle": res.get("method", res.get("path", "Windows App")), "value": "Launched"}},
+                )
+            except Exception as exc:
+                self.record_activity("tool", "open_application_error", str(exc), "error")
+                return self.db.add_message(conv_id, "system", f"I couldn't open {app_key}: {exc}", mode=mode)
+            finally:
+                self.set_robot_state("idle")
+
+        # 4. Screen capture / inspect screen ("take a screenshot", "look at my screen")
+        if re.search(r"\b(take a screenshot|capture my screen|look at my screen|what'?s on my screen)\b", low):
+            dec = self.permissions.evaluate("screen_capture", "primary_monitor")
+            if not dec.allowed:
+                return self.db.add_message(conv_id, "system", f"Screen capture blocked: {dec.reason}", mode=mode)
+            self.set_robot_state("working")
+            try:
+                res = self.tools.execute("screen_capture", {})
+                reply = f"I captured your screen ({res['width']}×{res['height']}). Your active window is \"{res['active_window'] or 'Desktop'}\", and the screenshot was saved locally."
+                self.record_activity("tool", "screen_capture", f"Captured screen ({res['width']}x{res['height']}).", "ok", res)
+                return self.db.add_message(
+                    conv_id, "assistant", reply, provider="ryna_vision", model="screen_capture", mode="offline",
+                    metadata={"action_card": {"title": "Screen Captured", "subtitle": res["active_window"] or "Desktop", "value": Path(res["path"]).name}},
+                )
+            except Exception as exc:
+                return self.db.add_message(conv_id, "system", f"Screen capture failed: {exc}", mode=mode)
+            finally:
+                self.set_robot_state("idle")
+
+        # 5. Live web search ("search the web for ...", "search web for ...", "google ...")
+        m_search = re.match(r"^(?:please\s+)?(?:search(?:\s+the)?\s+web\s+for|web\s+search|search\s+for|look\s+up)\s+(.+)$", text.strip(), re.IGNORECASE)
+        if m_search:
+            query = m_search.group(1).strip()
+            if not online:
+                return self.db.add_message(conv_id, "system", f"I'm currently offline, so I can't search the web for \"{query}\" right now. I can still answer using local AI if you'd like.", mode="offline")
+            self.set_robot_state("working")
+            try:
+                res = self.tools.execute("web_search", {"query": query})
+                top = res.get("results", [])[:4]
+                if not top:
+                    return self.db.add_message(conv_id, "assistant", f"I searched the web for \"{query}\" but no results were returned.", provider="ryna_web", model="web_search", mode="online")
+                lines = [f"Here's what I found for \"{query}\":"]
+                for r in top:
+                    lines.append(f"• {r['title']}: {r['snippet']}")
+                reply = "\n".join(lines)
+                self.record_activity("tool", "web_search", f"Searched web for '{query}' ({len(top)} results).", "ok")
+                return self.db.add_message(
+                    conv_id, "assistant", reply, provider="ryna_web", model="web_search", mode="online",
+                    metadata={"action_card": {"title": f"Web Search: {query}", "subtitle": f"{len(top)} verified result(s)", "value": top[0]["title"]}},
+                )
+            except Exception as exc:
+                return self.db.add_message(conv_id, "system", f"Web search failed: {exc}", mode=mode)
+            finally:
+                self.set_robot_state("idle")
+
+        return None
+
     def stream_chat(
         self,
         conversation_id: str | None,
@@ -261,6 +365,11 @@ class RynaCore:
             if tool_msg is not None:
                 yield {"event": "done", "data": {"conversation_id": conv_id, "assistant_message": tool_msg, "ai_available": True, "used_tool": True}}
                 return
+
+        natural_msg = self._try_natural_action(user_text, conv_id, online)
+        if natural_msg is not None:
+            yield {"event": "done", "data": {"conversation_id": conv_id, "assistant_message": natural_msg, "ai_available": True, "used_tool": True}}
+            return
 
         gid = new_id("gen")
         self.voice.begin_generation(gid)

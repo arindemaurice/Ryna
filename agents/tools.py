@@ -7,7 +7,9 @@ import html
 import operator
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -57,27 +59,33 @@ class ToolRegistry:
         self.computer = computer
         self._handlers: dict[str, Callable[[dict[str, Any]], Any]] = {
             "calculate": self._calc,
+            "current_time": self._current_time,
             "file_search": self._file_search,
             "file_read": self._file_read,
             "file_write": self._file_write,
             "create_note": self._create_note,
             "system_diagnostics": self._diagnostics,
             "active_window": self._active_window,
+            "screen_capture": self._screen_capture,
             "open_application": self._open_app,
             "web_fetch": self._web_fetch,
+            "web_search": self._web_search,
         }
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [
             {"name": "calculate", "level": 1, "offline": True, "description": "AST-safe mathematical evaluation"},
+            {"name": "current_time", "level": 1, "offline": True, "description": "Real local system date and time"},
             {"name": "file_search", "level": 1, "offline": True, "description": "Discover files inside allowed workspace root"},
             {"name": "file_read", "level": 1, "offline": True, "description": "Read UTF-8 text/code/data files inside allowed root"},
-            {"name": "file_write", "level": 2, "offline": True, "description": "Create or save a text file inside allowed root (requires Level 2 approval)"},
+            {"name": "file_write", "level": 2, "offline": True, "description": "Create or save a text file inside allowed root (Level 2 approval)"},
             {"name": "create_note", "level": 1, "offline": True, "description": "Save a local note or reminder in SQLite"},
             {"name": "system_diagnostics", "level": 1, "offline": True, "description": "Live CPU, RAM, GPU, disk, and database telemetry"},
             {"name": "active_window", "level": 1, "offline": True, "description": "Inspect currently focused Windows desktop window"},
-            {"name": "open_application", "level": 2, "offline": True, "description": "Launch an allowlisted Windows application (requires opt-in & confirmation)"},
+            {"name": "screen_capture", "level": 1, "offline": True, "description": "Capture current Windows screen via mss (when screen vision enabled)"},
+            {"name": "open_application", "level": 1, "offline": True, "description": "Launch an allowlisted Windows application (Spotify, Chrome, VS Code, etc.)"},
             {"name": "web_fetch", "level": 1, "offline": False, "description": "Fetch public HTTP(S) webpage text with untrusted-content isolation"},
+            {"name": "web_search", "level": 1, "offline": False, "description": "Search the live web with real URLs and isolated snippets"},
         ]
 
     def _allowed_root(self) -> Path:
@@ -153,8 +161,40 @@ class ToolRegistry:
     def _active_window(self, _args: dict[str, Any]) -> dict[str, Any]:
         return self.computer.active_window_title()
 
+    def _current_time(self, _args: dict[str, Any]) -> dict[str, Any]:
+        now = datetime.now()
+        return {"time": now.strftime("%I:%M %p").lstrip("0"), "date": now.strftime("%A, %B %d, %Y"), "iso": now.isoformat()}
+
+    def _screen_capture(self, _args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.capture_screen()
+
     def _open_app(self, args: dict[str, Any]) -> dict[str, Any]:
         return self.computer.launch_application(str(args.get("app", "")))
+
+    def _web_search(self, args: dict[str, Any]) -> dict[str, Any]:
+        q = str(args.get("query", "")).strip()
+        if not q:
+            raise ValueError("Missing search query.")
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(q)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RYNA/0.1"})
+        try:
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                page = resp.read(250_000).decode("utf-8", errors="replace")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(f"Web search unavailable: {exc}") from exc
+
+        links = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', page)
+        snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)</a>|<div[^>]+class="result__snippet"[^>]*>([\s\S]*?)</div>', page)
+        results = []
+        for idx, (href, raw_title) in enumerate(links[:5]):
+            title = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+            snip = ""
+            if idx < len(snippets):
+                raw_s = snippets[idx][0] or snippets[idx][1]
+                snip = html.unescape(re.sub(r"<[^>]+>", "", raw_s)).strip()
+            results.append({"title": title, "url": href, "snippet": snip})
+        summary_block = "\n".join(f"- {r['title']}: {r['snippet']} ({r['url']})" for r in results)
+        return {"query": q, "count": len(results), "results": results, "isolated": wrap_untrusted_web_content(url, summary_block)}
 
     def _web_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
         url = str(args.get("url", "")).strip()

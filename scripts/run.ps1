@@ -1,16 +1,16 @@
 param(
     [string]$BindHost = "127.0.0.1",
     [int]$Port = 8765,
-    [switch]$OpenUI,
-    [switch]$Robot
+    [switch]$Headless,
+    [switch]$WebUI
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Push-Location $Root
 try {
     $argsList = @("-m", "ai.orchestration.main", "--host", $BindHost, "--port", "$Port")
-    if ($OpenUI) { $argsList += "--open-ui" }
-    if ($Robot) { $argsList += "--robot" }
+    if ($Headless) { $argsList += "--headless" }
+    if ($WebUI) { $argsList += "--open-ui" }
     & python @argsList
     exit $LASTEXITCODE
 } finally { Pop-Location }

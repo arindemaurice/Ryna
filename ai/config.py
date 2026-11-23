@@ -44,7 +44,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "voice.wake_sensitivity": 0.65,
     "voice.speech_speed": 1.0,
     "voice.selected_voice": "Microsoft Zira Desktop",
-    "voice.tts_engine": "browser",  # browser | windows-sapi
+    "voice.tts_engine": "windows-sapi",  # windows-sapi (offline) | browser
     "voice.microphone": "default",
     "voice.speaker": "default",
     "voice.vad_enabled": True,
@@ -55,10 +55,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "privacy.redact_secrets": True,
     "privacy.telemetry": False,
     # Desktop Robot Presence
-    "desktop.robot_size": 180,
+    "desktop.robot_size": 190,
     "desktop.robot_x": -1,
     "desktop.robot_y": -1,
-    "desktop.robot_transparency": 0.96,
+    "desktop.robot_transparency": 0.98,
     "desktop.robot_always_on_top": True,
     "desktop.robot_visible": True,
     "desktop.reduced_animations": False,
@@ -66,8 +66,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "desktop.background_mode": True,
     # Computer Control & Vision
     "computer.allowed_root": ".",
-    "computer.allow_app_launch": False,
-    "computer.allow_screen_vision": False,
+    "computer.allow_app_launch": True,
+    "computer.allow_screen_vision": True,
     "computer.allow_input_control": False,
     # Permissions & Agent
     "permissions.level1_auto": True,

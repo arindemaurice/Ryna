@@ -80,8 +80,9 @@ class TestAgentsVoiceAndComputer(unittest.TestCase):
             safe_calculate("__import__('os').system('dir')")
         with self.assertRaises(PermissionError):
             self.tools.execute("file_read", {"path": "..\\..\\Windows\\win.ini"})
+        self.db.set_setting("computer.allow_app_launch", False)
         with self.assertRaises(PermissionError):
-            self.comp.launch_application("notepad")  # disabled by default
+            self.comp.launch_application("notepad")  # blocked when toggle disabled
 
         g1, g2 = SingleInstanceGuard("RYNA_CLEAN_TEST_MUTEX"), SingleInstanceGuard("RYNA_CLEAN_TEST_MUTEX")
         self.assertTrue(g1.acquire())
