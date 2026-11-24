@@ -59,6 +59,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "desktop.robot_always_on_top": True,
     "desktop.robot_visible": True,
     "desktop.robot_walk_enabled": True,
+    "desktop.physical_app_search": True,
     "desktop.reduced_animations": False,
     "desktop.startup_enabled": False,
     "desktop.background_mode": True,

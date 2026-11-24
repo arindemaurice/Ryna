@@ -68,6 +68,17 @@ class ToolRegistry:
             "active_window": self._active_window,
             "screen_capture": self._screen_capture,
             "open_application": self._open_app,
+            "close_application": self._close_app,
+            "list_apps": self._list_apps,
+            "open_folder": self._open_folder,
+            "volume_control": self._volume_control,
+            "brightness_control": self._brightness_control,
+            "battery_status": self._battery_status,
+            "computer_shortcut": self._computer_shortcut,
+            "open_settings_page": self._open_settings_page,
+            "media_search": self._media_search,
+            "clipboard_get": self._clipboard_get,
+            "clipboard_set": self._clipboard_set,
             "web_fetch": self._web_fetch,
             "web_search": self._web_search,
         }
@@ -83,7 +94,18 @@ class ToolRegistry:
             {"name": "system_diagnostics", "level": 1, "offline": True, "description": "Live CPU, RAM, GPU, disk, and database telemetry"},
             {"name": "active_window", "level": 1, "offline": True, "description": "Inspect currently focused Windows desktop window"},
             {"name": "screen_capture", "level": 1, "offline": True, "description": "Capture current Windows screen via mss (when screen vision enabled)"},
-            {"name": "open_application", "level": 1, "offline": True, "description": "Launch an allowlisted Windows application (Spotify, Chrome, VS Code, etc.)"},
+            {"name": "open_application", "level": 1, "offline": True, "description": "Launch any Windows app via physical Search bar or StartApps"},
+            {"name": "close_application", "level": 1, "offline": True, "description": "Politely close an open non-system Windows app"},
+            {"name": "list_apps", "level": 1, "offline": True, "description": "List installed Windows Start menu applications"},
+            {"name": "open_folder", "level": 1, "offline": True, "description": "Open Desktop, Documents, Downloads, Pictures, This PC, or Recycle Bin"},
+            {"name": "volume_control", "level": 1, "offline": True, "description": "Turn Windows volume up, down, mute, or set to a percentage"},
+            {"name": "brightness_control", "level": 1, "offline": True, "description": "Adjust screen brightness up, down, or to a percentage"},
+            {"name": "battery_status", "level": 1, "offline": True, "description": "Report live laptop battery percentage and charging status"},
+            {"name": "computer_shortcut", "level": 1, "offline": True, "description": "Show desktop, switch windows, or lock screen"},
+            {"name": "open_settings_page", "level": 1, "offline": True, "description": "Open a specific Windows Settings page (Wi-Fi, Bluetooth, Display, Sound, etc.)"},
+            {"name": "media_search", "level": 1, "offline": False, "description": "Search Spotify, YouTube, or Google Maps directly"},
+            {"name": "clipboard_get", "level": 1, "offline": True, "description": "Read text currently on the Windows clipboard"},
+            {"name": "clipboard_set", "level": 1, "offline": True, "description": "Copy text to the Windows clipboard"},
             {"name": "web_fetch", "level": 1, "offline": False, "description": "Fetch public HTTP(S) webpage text with untrusted-content isolation"},
             {"name": "web_search", "level": 1, "offline": False, "description": "Search the live web with real URLs and isolated snippets"},
         ]
@@ -169,7 +191,46 @@ class ToolRegistry:
         return self.computer.capture_screen()
 
     def _open_app(self, args: dict[str, Any]) -> dict[str, Any]:
-        return self.computer.launch_application(str(args.get("app", "")))
+        return self.computer.launch_application(
+            str(args.get("app", "")),
+            prefer_search_bar=args.get("prefer_search_bar"),
+        )
+
+    def _close_app(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.close_application(str(args.get("app", "")))
+
+    def _list_apps(self, _args: dict[str, Any]) -> dict[str, Any]:
+        apps = self.computer.list_installed_apps()
+        return {"count": len(apps), "apps": [a["name"] for a in apps[:60]]}
+
+    def _open_folder(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.open_folder(str(args.get("folder", "")))
+
+    def _volume_control(self, args: dict[str, Any]) -> dict[str, Any]:
+        if "level" in args and args["level"] is not None:
+            return self.computer.set_volume(int(args["level"]))
+        return self.computer.volume_control(str(args.get("action", "up")), int(args.get("steps", 5)))
+
+    def _brightness_control(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.brightness_control(str(args.get("mode", "up")), int(args.get("value", 0)))
+
+    def _battery_status(self, _args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.battery_status()
+
+    def _computer_shortcut(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.computer_shortcut(str(args.get("action", "")))
+
+    def _open_settings_page(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.open_settings_page(str(args.get("page", "")))
+
+    def _media_search(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.open_media_search(str(args.get("platform", "youtube")), str(args.get("query", "")))
+
+    def _clipboard_get(self, _args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.clipboard_get()
+
+    def _clipboard_set(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.computer.clipboard_set(str(args.get("text", "")))
 
     def _web_search(self, args: dict[str, Any]) -> dict[str, Any]:
         q = str(args.get("query", "")).strip()

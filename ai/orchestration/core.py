@@ -70,6 +70,9 @@ class RynaCore:
         self.tasks = AgentTaskEngine(self.db, self.permissions, self.tools, connectivity_checker=self._check_online)
         self.ai = AIRouter(self.config, self.db, connectivity_checker=self._check_online)
         self.voice = VoiceManager(self.db)
+        # Optional UI hook: when running as the desktop robot, RYNA physically walks to the
+        # Windows Search bar, searches the app name, and opens it rapidly.
+        self.physical_app_launcher: Callable[[str], dict[str, Any]] | None = None
 
         self.recovered_tasks = self.tasks.recover_after_restart()
         if self.recovered_tasks:
@@ -264,12 +267,41 @@ class RynaCore:
             self.set_robot_state("idle")
 
     def _try_natural_action(self, text: str, conv_id: str, online: bool) -> dict[str, Any] | None:
-        """Execute verified real local/online actions when user gives natural spoken or typed commands."""
-        low = text.strip().lower().rstrip(".!?")
+        """Execute verified real local/online actions (including Jarvis-ported Windows capabilities
+        and fast physical Search-bar app opening) when user gives natural spoken or typed commands.
+        """
+        raw = text.strip()
+        # Strip polite conversational lead-ins ("please", "can you", "could you", "go and")
+        stripped = re.sub(r"^(?:(?:hey\s+ryna|ryna|please|can you|could you|i want you to|go and|go ahead and)\s*,?\s*)+", "", raw, flags=re.IGNORECASE).strip()
+        low = stripped.lower().rstrip(".!?")
         mode = "online" if online else "offline"
 
-        # 1. Time / Date check (works 100% offline)
-        if re.search(r"\b(what time is it|current time|check time|what('s| is) the time|what('s| is) today'?s? date)\b", low):
+        def _exec_action(tool_name: str, args: dict[str, Any], target: str, reply_fn: Callable[[dict[str, Any]], str], title: str) -> dict[str, Any]:
+            dec = self.permissions.evaluate(tool_name, target)
+            if not dec.allowed:
+                return self.db.add_message(conv_id, "system", f"Action blocked: {dec.reason}", mode=mode)
+            self.set_robot_state("working")
+            try:
+                res = self.tools.execute(tool_name, args)
+                reply = reply_fn(res)
+                self.record_activity("tool", tool_name, reply[:120], "ok", res)
+                return self.db.add_message(
+                    conv_id,
+                    "assistant",
+                    reply,
+                    provider="ryna_computer",
+                    model=tool_name,
+                    mode="offline" if tool_name not in ("web_search", "media_search") else mode,
+                    metadata={"action_card": {"title": title, "subtitle": target, "value": "Done"}},
+                )
+            except Exception as exc:
+                self.record_activity("tool", f"{tool_name}_error", str(exc), "error")
+                return self.db.add_message(conv_id, "system", f"I couldn't complete that: {exc}", mode=mode)
+            finally:
+                self.set_robot_state("idle")
+
+        # 1. Time / Date check (100% offline)
+        if re.search(r"\b(what time is it|current time|check time|what('s| is) the time|what('s| is) today'?s? date|tell me the time)\b", low):
             res = self.tools.execute("current_time", {})
             reply = f"It's {res['time']} on {res['date']}."
             self.record_activity("tool", "current_time", reply, "ok")
@@ -278,13 +310,17 @@ class RynaCore:
                 metadata={"action_card": {"title": "Local Time", "subtitle": res["date"], "value": res["time"]}},
             )
 
-        # 2. Remember fact/preference into persistent memory
-        m_rem = re.match(r"^(?:please\s+)?remember\s+(?:that\s+)?(.+)$", text.strip(), re.IGNORECASE)
+        # 2. Battery status (instant Win32 offline)
+        if re.match(r"^(?:what(?:'s| is) )?(?:my |the )?battery(?: level| status| percentage| life)?$|^how much battery(?: do i have| is left)?$", low):
+            return _exec_action("battery_status", {}, "battery", lambda r: str(r.get("detail", "Checked battery.")), "Battery")
+
+        # 3. Remember fact/preference into persistent memory
+        m_rem = re.match(r"^(?:remember|don'?t forget|keep in mind)\s+(?:that\s+)?(.+)$", stripped, re.IGNORECASE)
         if m_rem:
-            fact = m_rem.group(1).strip()
+            fact = m_rem.group(1).strip().rstrip(".!")
             try:
                 saved = self.memory.add("personal", fact, "confirmed_fact", source="conversation")
-                reply = f"Got it — I've saved that to memory: \"{saved['content']}\""
+                reply = f"Got it. I'll remember that: {saved['content']}."
                 self.record_activity("memory", "memory_saved", f"Remembered: {fact[:80]}", "ok")
                 return self.db.add_message(
                     conv_id, "assistant", reply, provider="ryna_memory", model="memory", mode="offline",
@@ -293,29 +329,121 @@ class RynaCore:
             except Exception as exc:
                 return self.db.add_message(conv_id, "system", f"Could not save memory: {exc}", mode=mode)
 
-        # 3. Open allowlisted Windows application ("open spotify", "open chrome", "open browser", "open vs code", etc.)
-        m_open = re.match(r"^(?:please\s+)?(?:open|launch|start)\s+(spotify|chrome|google chrome|edge|microsoft edge|browser|vs code|vscode|notepad|calculator|explorer|file explorer|paint|settings|discord|whatsapp|word|excel)\b", low)
-        if m_open:
-            app_key = m_open.group(1).replace("google ", "").replace("microsoft ", "")
-            dec = self.permissions.evaluate("open_application", app_key)
-            if not dec.allowed:
-                return self.db.add_message(conv_id, "system", f"Launching {app_key} blocked: {dec.reason}", mode=mode)
-            self.set_robot_state("working")
-            try:
-                res = self.tools.execute("open_application", {"app": app_key})
-                reply = f"Opening {app_key.title()} now."
-                self.record_activity("tool", "open_application", f"Launched {app_key}.", "ok", res)
-                return self.db.add_message(
-                    conv_id, "assistant", reply, provider="ryna_computer", model="open_application", mode="offline",
-                    metadata={"action_card": {"title": f"Opened {app_key.title()}", "subtitle": res.get("method", res.get("path", "Windows App")), "value": "Launched"}},
-                )
-            except Exception as exc:
-                self.record_activity("tool", "open_application_error", str(exc), "error")
-                return self.db.add_message(conv_id, "system", f"I couldn't open {app_key}: {exc}", mode=mode)
-            finally:
-                self.set_robot_state("idle")
+        # 4. Volume controls ("volume up", "volume down", "mute", "set volume to 50")
+        m_vol_set = re.match(r"^(?:set |change |put )?(?:the )?(?:volume|sound)(?: level)?(?: to| at)?\s+(\d{1,3})\s*(?:%|percent)?$", low)
+        if m_vol_set:
+            lvl = max(0, min(100, int(m_vol_set.group(1))))
+            return _exec_action("volume_control", {"level": lvl}, f"volume:{lvl}", lambda _r: f"Volume set to about {lvl} percent.", "Volume")
+        m_vol = re.match(r"^(?:turn |make )?(?:the )?(?:volume|sound)\s+(up|down)(?:\s+a\s+(?:bit|little))?$", low) or re.match(r"^(?:turn )?(?:it )?(up|down)\s+(?:the )?(?:volume|sound)$", low)
+        if m_vol:
+            act = m_vol.group(1)
+            return _exec_action("volume_control", {"action": act, "steps": 5}, f"volume:{act}", lambda _r: f"Turned the volume {act}.", "Volume")
+        if re.match(r"^(?:mute|unmute)(?: (?:the|my))?(?: volume| sound| computer| pc| laptop)?$", low):
+            return _exec_action("volume_control", {"action": "mute"}, "volume:mute", lambda _r: "Toggled mute.", "Volume")
 
-        # 4. Screen capture / inspect screen ("take a screenshot", "look at my screen")
+        # 5. Brightness controls ("brightness up/down", "set brightness to 70")
+        m_br_set = re.match(r"^(?:set |change |put )?(?:the )?(?:screen )?brightness(?: to| at)?\s+(\d{1,3})\s*(?:%|percent)?$", low)
+        if m_br_set:
+            lvl = max(0, min(100, int(m_br_set.group(1))))
+            return _exec_action("brightness_control", {"mode": "set", "value": lvl}, f"brightness:{lvl}", lambda _r: f"Screen brightness set to {lvl} percent.", "Brightness")
+        m_br = re.match(r"^(?:turn |make )?(?:the )?(?:screen )?brightness\s+(up|down)$", low) or re.match(r"^(increase|raise|decrease|lower|reduce|dim)\s+(?:the\s+)?(?:screen\s+)?brightness$", low)
+        if m_br:
+            act = "up" if m_br.group(1) in ("up", "increase", "raise") else "down"
+            return _exec_action("brightness_control", {"mode": act}, f"brightness:{act}", lambda _r: f"Turned screen brightness {act}.", "Brightness")
+
+        # 6. Desktop shortcuts ("show desktop", "switch window", "lock screen")
+        if re.match(r"^(?:show (?:the )?desktop|minimi[sz]e (?:all )?(?:the )?(?:windows|everything))$", low):
+            return _exec_action("computer_shortcut", {"action": "show_desktop"}, "show_desktop", lambda _r: "Showing your desktop.", "Desktop")
+        if re.match(r"^(?:switch|change) (?:the )?(?:app|window|windows)$", low):
+            return _exec_action("computer_shortcut", {"action": "switch_window"}, "switch_window", lambda _r: "Switching windows.", "Window Switch")
+        if re.match(r"^lock(?: my| the)?\s+(?:computer|pc|laptop|screen|windows|workstation)$", low):
+            return _exec_action("computer_shortcut", {"action": "lock_screen"}, "lock_screen", lambda _r: "Locking your screen.", "Lock Screen")
+
+        # 7. Open Windows Settings pages ("open wifi settings", "open bluetooth settings", etc.)
+        m_set = re.match(r"^open(?: the)?\s+([a-z -]{3,20}?)\s+settings$", low)
+        if m_set:
+            page = m_set.group(1).strip()
+            return _exec_action("open_settings_page", {"page": page}, page, lambda r: f"Opened {r.get('page', page)} settings.", "Windows Settings")
+
+        # 8. Open common folders ("open downloads", "open documents", "open this pc", "open recycle bin")
+        m_fold = re.match(r"^(?:open|show|go to)\s+(?:my |the )?(this pc|my pc|my computer|recycle bin|trash|desktop|documents|downloads|pictures|workspace)(?: folder)?$", low)
+        if m_fold:
+            f = m_fold.group(1)
+            return _exec_action("open_folder", {"folder": f}, f, lambda r: f"Opened {r.get('folder', f)}.", "Folder")
+
+        # 9. Clipboard read / copy
+        if re.match(r"^(?:what(?:'s| is) (?:on|in) (?:my |the )?clipboard|read (?:my |the )?clipboard)$", low):
+            return _exec_action(
+                "clipboard_get", {}, "clipboard",
+                lambda r: "Your clipboard is empty." if r.get("empty") else f"Your clipboard says: {str(r.get('text', ''))[:180]}",
+                "Clipboard",
+            )
+        m_clip = re.match(r"^copy\s+(.+?)\s+to (?:the |my )?clipboard$", stripped, re.IGNORECASE)
+        if m_clip:
+            clip_txt = m_clip.group(1).strip().strip("\"'")
+            return _exec_action("clipboard_set", {"text": clip_txt}, "clipboard", lambda _r: "Copied that to your clipboard.", "Clipboard")
+
+        # 10. YouTube / Spotify / Maps search
+        m_yt = re.match(r"^(?:play|search|find|watch|open|show me)\s+(.+?)\s+on youtube$", stripped, re.IGNORECASE) or re.match(r"^(?:search )?youtube(?: for)?\s+(.+)$", stripped, re.IGNORECASE)
+        if m_yt:
+            q = m_yt.group(1).strip()
+            return _exec_action("media_search", {"platform": "youtube", "query": q}, q, lambda _r: f"Opened YouTube search for {q}.", "YouTube")
+        m_sp = re.match(r"^(?:(?:open|launch) spotify and )?(?:play|search spotify for)\s+(?:me\s+)?(.+?)(?:\s+on spotify)?$", stripped, re.IGNORECASE)
+        if m_sp and len(m_sp.group(1).strip()) <= 100 and not re.search(r"\b(game|video)\b", low):
+            q = m_sp.group(1).strip()
+            return _exec_action("media_search", {"platform": "spotify", "query": q}, q, lambda _r: f"Opened Spotify search for {q}.", "Spotify")
+        m_map = re.match(r"^(?:show me |get |give me )?(?:directions to|a map of|map of|navigate to)\s+(.+)$", stripped, re.IGNORECASE)
+        if m_map:
+            q = m_map.group(1).strip()
+            return _exec_action("media_search", {"platform": "maps", "query": q}, q, lambda _r: f"Opened directions to {q}.", "Maps")
+
+        # 11. List installed apps
+        if re.match(r"^(?:list|show|what are)\s+(?:my |the |installed )?(?:installed )?apps?$|^what apps can you open$", low):
+            return _exec_action(
+                "list_apps", {}, "installed_apps",
+                lambda r: f"I found {r.get('count', 0)} installed apps, including {', '.join(r.get('apps', [])[:8])}.",
+                "Installed Apps",
+            )
+
+        # 12. Open ANY Windows application (uses RYNA's fast physical Search-bar walk-and-open when active!)
+        m_open = re.match(r"^(?:open|launch|start)\s+(?:my\s+|the\s+)?([\w .&()'+\-]{1,50}?)(?:\s+app|\s+application)?$", low)
+        if m_open:
+            app_name = m_open.group(1).strip()
+            looks_like_sentence = bool(re.search(r"\b(?:and|then)\s+(?:tell|check|show|read|let|see|search|play|find|open|send)\b|\b(?:if|whether)\s+(?:i|there|you)\b|\bunread\b", app_name))
+            is_non_app = app_name in ("up", "it", "that", "this", "a", "the", "walking", "listening")
+            if not looks_like_sentence and not is_non_app:
+                dec = self.permissions.evaluate("open_application", app_name)
+                if not dec.allowed:
+                    return self.db.add_message(conv_id, "system", f"Launching {app_name} blocked: {dec.reason}", mode=mode)
+                self.set_robot_state("working")
+                try:
+                    use_physical = bool(self.db.get_setting("desktop.physical_app_search", True)) and callable(self.physical_app_launcher)
+                    if use_physical:
+                        res = self.physical_app_launcher(app_name)  # type: ignore[misc]
+                    else:
+                        res = self.tools.execute("open_application", {"app": app_name})
+                    shown_name = str(res.get("app") or app_name).strip()
+                    reply = f"Opening {shown_name} now."
+                    self.record_activity("tool", "open_application", f"Launched {shown_name} ({res.get('method', 'app')}).", "ok", res)
+                    return self.db.add_message(
+                        conv_id, "assistant", reply, provider="ryna_computer", model="open_application", mode="offline",
+                        metadata={"action_card": {"title": f"Opened {shown_name}", "subtitle": res.get("method", "Windows App"), "value": "Launched"}},
+                    )
+                except Exception as exc:
+                    self.record_activity("tool", "open_application_error", str(exc), "error")
+                    return self.db.add_message(conv_id, "system", f"I couldn't open {app_name}: {exc}", mode=mode)
+                finally:
+                    self.set_robot_state("idle")
+
+        # 13. Close an open Windows app politely ("close notepad", "close word", "close chrome")
+        m_close = re.match(r"^(?:close|quit|exit)\s+(?:my\s+|the\s+)?([\w .&()'+\-]{2,50}?)(?:\s+(?:app|application|program|window))?$", low)
+        if m_close:
+            target_app = m_close.group(1).strip()
+            skip_close = {"it", "that", "this", "everything", "all", "ryna", "listening", "voice", "talking", "speaking", "settings", "chat"}
+            if target_app not in skip_close:
+                return _exec_action("close_application", {"app": target_app}, target_app, lambda r: f"Closed {r.get('app', target_app)}.", "Closed App")
+
+        # 14. Screen capture / inspect screen ("take a screenshot", "look at my screen")
         if re.search(r"\b(take a screenshot|capture my screen|look at my screen|what'?s on my screen)\b", low):
             dec = self.permissions.evaluate("screen_capture", "primary_monitor")
             if not dec.allowed:
@@ -334,8 +462,8 @@ class RynaCore:
             finally:
                 self.set_robot_state("idle")
 
-        # 5. Live web search ("search the web for ...", "search web for ...", "google ...")
-        m_search = re.match(r"^(?:please\s+)?(?:search(?:\s+the)?\s+web\s+for|web\s+search|search\s+for|look\s+up)\s+(.+)$", text.strip(), re.IGNORECASE)
+        # 15. Live web search ("search the web for ...", "google ...", "look up ...")
+        m_search = re.match(r"^(?:search(?:\s+the)?\s+(?:web|internet|google)\s+for|web\s+search|search\s+for|google|look\s+up)\s+(.+)$", stripped, re.IGNORECASE)
         if m_search:
             query = m_search.group(1).strip()
             if not online:

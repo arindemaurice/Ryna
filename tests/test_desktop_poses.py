@@ -117,10 +117,54 @@ class TestDesktopPosesAndSchedule(unittest.TestCase):
 
                 self.assertIsNotNone(app._try_voice_setting("wake up"))
                 self.assertIsNone(app.manual_pose)
+
+                # Verify right-click Monitor & Settings panel opens, refreshes live telemetry, and toggles settings
+                app.open_settings_panel()
+                panel = app._settings_panel
+                self.assertIsNotNone(panel)
+                panel.win.update_idletasks()
+                self.assertIn("Pose:", panel._mon_vars["state"].get())
+                panel._set_pose("sit")
+                self.assertEqual(app.current_action, "sit")
+                panel._var_phys_search.set(False)
+                core.db.set_setting("desktop.physical_app_search", False)
+                self.assertFalse(bool(core.db.get_setting("desktop.physical_app_search", True)))
+                panel.close()
+
+                # Verify physical app launcher hook routes "open word" cleanly
+                launched: list[str] = []
+                core.db.set_setting("desktop.physical_app_search", True)
+                core.physical_app_launcher = lambda name: (launched.append(name) or {"launched": True, "app": "Word", "method": "windows_search_bar"})
+                res = core.send_chat(None, "please open word")
+                self.assertEqual(launched, ["word"])
+                self.assertIn("Opening Word", res["assistant_message"]["content"])
+
+                # Verify sentence guard does NOT hijack normal conversation as an app launch
+                launched.clear()
+                m_bat = core.send_chat(None, "how much battery do i have")
+                self.assertEqual(launched, [])
+                self.assertIn("battery", m_bat["assistant_message"]["content"].lower())
             finally:
                 if app is not None:
                     app.quit_app()
                 core.close()
+
+    def test_jarvis_ported_app_registry_and_battery(self) -> None:
+        from computer.controller import resolve_app_spec
+
+        k_word, s_word = resolve_app_spec("Microsoft Word")
+        self.assertEqual(k_word, "word")
+        self.assertIsNotNone(s_word)
+        assert s_word is not None
+        self.assertEqual(s_word["name"], "Word")
+
+        k_code, _ = resolve_app_spec("vs code")
+        self.assertIn(k_code, ("vscode", "vs code"))
+
+        k_pc, s_pc = resolve_app_spec("my computer")
+        self.assertEqual(k_pc, "thispc")
+        assert s_pc is not None
+        self.assertEqual(s_pc["folder"], "thispc")
 
 
 if __name__ == "__main__":

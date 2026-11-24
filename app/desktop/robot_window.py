@@ -140,10 +140,17 @@ class RynaRobotDesktop:
         self._last_dictation = ""
         self._bubble_hide_at = time.monotonic() + 7.0
         self._tray_icon: Any = None
+        self._settings_panel: Any = None
+        self._nav_target: tuple[float, float] | None = None
+        self._nav_done_event: threading.Event | None = None
+        self._nav_speed = 32.0
         self._drag_x = 0
         self._drag_y = 0
         self._dragged = False
         self._dragging_now = False
+
+        # Register RYNA's physical Search-bar app launch choreography on core
+        self.core.physical_app_launcher = self._launch_app_physically
 
         # --- 1. Root Transparent Robot Window ---
         self.root = tk.Tk()
@@ -245,9 +252,10 @@ class RynaRobotDesktop:
         )
         self._reply_lbl.pack(fill="x", pady=(5, 0))
 
-        # Clicking anywhere on the bubble also triggers the same click behavior as clicking RYNA
+        # Clicking anywhere on the bubble triggers left-click flow; right-click opens Settings & Monitor
         for w in (self.bubble, self._bubble_frame, self._dict_container, self._dictation_lbl, self._reply_lbl):
             w.bind("<Button-1>", lambda _e: self._on_click_ryna())
+            w.bind("<Button-3>", lambda _e: self.open_settings_panel())
         self._position_bubble()
 
         # --- 3. Minimal Tray Icon (only Show / Exit — all settings are voice-controlled) ---
@@ -306,11 +314,65 @@ class RynaRobotDesktop:
         self._pose_sleep = ImageTk.PhotoImage(sleep) if sleep is not None else None
 
     def _bind_events(self) -> None:
-        # Left click = greet & listen (or barge-in interrupt); drag = move RYNA. NO dropdown menus!
+        # Left click = greet & listen (or barge-in interrupt); drag = move RYNA;
+        # Right click = open RYNA Monitor & Settings panel!
         self.canvas.bind("<ButtonPress-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<Button-3>", lambda _e: self.open_settings_panel())
         self.root.bind("<Escape>", lambda _e: self.interrupt_now())
+
+    def open_settings_panel(self) -> None:
+        """Open (or focus) the right-click RYNA Monitor & Settings window."""
+        from app.desktop.settings_panel import RynaSettingsMonitorWindow
+
+        if self._settings_panel is not None:
+            try:
+                if not self._settings_panel._closed and self._settings_panel.win.winfo_exists():
+                    self._settings_panel.focus()
+                    return
+            except Exception:
+                pass
+        self._settings_panel = RynaSettingsMonitorWindow(self)
+
+    def _launch_app_physically(self, app_name: str) -> dict[str, Any]:
+        """Fast physical Search-bar launch:
+        1. RYNA briskly runs down to the Windows Search bar (~0.35s, interchanging legs + speed trails)
+        2. Pops Windows Search (Win+S), rapidly types the app name (~15ms), and hits Enter to open it!
+        """
+        from computer.controller import resolve_app_spec
+
+        _key, spec = resolve_app_spec(app_name)
+        shown = spec["name"] if spec and spec.get("name") else app_name.strip().title()
+
+        # Pure folders/web URLs open immediately without needing the taskbar search bar
+        if spec and ("folder" in spec or ("url" in spec and "cmd" not in spec and "exe_candidates" not in spec and "uri" not in spec)):
+            return self.core.computer.launch_application(app_name, prefer_search_bar=False)
+
+        # Target right above Windows Search bar (centered-left taskbar area)
+        target_x = float(max(24, min(self.sw - self.win_w - 24, int(self.sw * 0.42 - self.win_w / 2))))
+        target_y = float(max(24, self.sh - self.win_h - 44))
+        done_ev = threading.Event()
+
+        def _begin_dash() -> None:
+            if not self.running:
+                done_ev.set()
+                return
+            dist = math.hypot(target_x - self.pos_x, target_y - self.pos_y)
+            # Scale speed so RYNA always reaches the Search bar quickly (~0.30-0.45s!)
+            self._nav_speed = max(28.0, min(68.0, dist / 11.0))
+            self._nav_done_event = done_ev
+            self._nav_target = (target_x, target_y)
+            self._show_bubble(f"Going to Search bar for {shown}…", dictation_text=self._last_dictation, show_mic_bar=False, duration=8.0)
+
+        self.root.after(0, _begin_dash)
+        done_ev.wait(timeout=0.75)
+
+        self.root.after(
+            0,
+            lambda: self._show_bubble(f"Searching for {shown}…", dictation_text=self._last_dictation, show_mic_bar=False, duration=6.0),
+        )
+        return self.core.computer.search_bar_launch(app_name)
 
     def _on_press(self, e: tk.Event) -> None:
         self._drag_x, self._drag_y = e.x, e.y
@@ -672,6 +734,7 @@ class RynaRobotDesktop:
                 icon_img = Image.open(self.head_png).convert("RGBA") if self.head_png.is_file() else Image.new("RGBA", (64, 64), (34, 211, 238, 255))
                 menu = pystray.Menu(
                     pystray.MenuItem("Show RYNA", lambda: self.root.after(0, self.show_from_tray)),
+                    pystray.MenuItem("Monitor & Settings", lambda: self.root.after(0, self.open_settings_panel)),
                     pystray.MenuItem("Exit RYNA", lambda: self.root.after(0, self.quit_app)),
                 )
                 self._tray_icon = pystray.Icon("RYNA", icon_img, "RYNA", menu)
@@ -711,11 +774,29 @@ class RynaRobotDesktop:
                 if next_act == "walk" and random.random() < 0.4:
                     self.facing *= -1
 
-        is_walking = (not busy) and self.walk_enabled and (self.current_action == "walk")
-        is_sleeping = (not busy) and (self.current_action == "sleep")
-        is_sitting = (not busy) and (self.current_action == "sit")
+        is_dashing = self._nav_target is not None and not self._dragging_now
+        is_walking = is_dashing or ((not busy) and self.walk_enabled and (self.current_action == "walk"))
+        is_sleeping = (not busy) and (not is_dashing) and (self.current_action == "sleep")
+        is_sitting = (not busy) and (not is_dashing) and (self.current_action == "sit")
 
-        if is_walking:
+        if is_dashing and self._nav_target is not None:
+            tx, ty = self._nav_target
+            dx, dy = tx - self.pos_x, ty - self.pos_y
+            dist = math.hypot(dx, dy)
+            if abs(dx) > 2:
+                self.facing = 1 if dx >= 0 else -1
+            if dist <= self._nav_speed + 4.0:
+                self.pos_x, self.pos_y = tx, ty
+                self._nav_target = None
+                if self._nav_done_event is not None:
+                    self._nav_done_event.set()
+                    self._nav_done_event = None
+            else:
+                self.pos_x += (dx / dist) * self._nav_speed
+                self.pos_y += (dy / dist) * self._nav_speed
+            self.root.geometry(f"+{int(self.pos_x)}+{int(self.pos_y)}")
+            self._position_bubble()
+        elif is_walking:
             self.pos_x += self.facing * self.walk_speed
             margin = 20
             if self.pos_x <= margin:
@@ -741,23 +822,23 @@ class RynaRobotDesktop:
             self._mic_bar.create_rectangle(0, 0, bar_w, 5, fill=CYAN_SOFT, outline="")
 
         self.phase += 0.12 if busy else (0.032 if is_sleeping else 0.055)
-        self.step_phase = (self.step_phase + 0.24) if is_walking else 0.0
+        self.step_phase = (self.step_phase + (0.48 if is_dashing else 0.24)) if is_walking else 0.0
 
-        accent = STATE_COLORS.get("thinking" if is_thinking else ("sleeping" if is_sleeping else self.state), CYAN)
+        accent = STATE_COLORS.get("working" if is_dashing else ("thinking" if is_thinking else ("sleeping" if is_sleeping else self.state)), CYAN)
 
         c = self.canvas
         c.delete("all")
         cx = self.win_w / 2
         foot_y = self.win_h - 12
 
-        # Motion speed trails when walking
+        # Motion speed trails when walking or dashing to Search bar
         if is_walking:
             trail_dir = -self.facing
-            for i in range(3):
+            for i in range(4 if is_dashing else 3):
                 y_line = foot_y - 5 - i * 8
                 x0 = cx + trail_dir * (18 + i * 8)
-                x1 = x0 + trail_dir * (26 - i * 5 + math.sin(self.step_phase + i) * 6)
-                c.create_line(x0, y_line, x1, y_line, fill=accent, width=2 if i == 0 else 1)
+                x1 = x0 + trail_dir * ((38 if is_dashing else 26) - i * 5 + math.sin(self.step_phase + i) * 6)
+                c.create_line(x0, y_line, x1, y_line, fill=accent, width=2 if i <= 1 else 1)
 
         # Ground neon halo (softer when sitting/sleeping, brighter when listening/thinking)
         halo_scale = 0.22 if is_sleeping else (0.26 if is_sitting else 0.29)
@@ -768,7 +849,14 @@ class RynaRobotDesktop:
         # Select the exact sprite for RYNA's current state/action!
         sprite: ImageTk.PhotoImage | None = None
         y_offset = 0.0
-        if is_thinking:
+        if is_dashing:
+            # Briskly dashing toward the Windows Search bar with interchanging legs!
+            frames = self._walk_right if self.facing >= 0 else self._walk_left
+            if frames:
+                idx = int(self.step_phase * 1.55) % len(frames)
+                sprite = frames[idx]
+                y_offset = -abs(math.sin(self.step_phase * 1.55 * math.pi / 2.0)) * 7.0
+        elif is_thinking:
             # STANDING UPRIGHT, LOOKING STRAIGHT FORWARD, TOUCHING HER HEAD!
             sprite = self._pose_think
             y_offset = math.sin(self.phase * 0.8) * 1.8
@@ -815,7 +903,9 @@ class RynaRobotDesktop:
         wave = "◉" if self.is_listening else ("◌" if is_thinking else ("◈" if is_speaking else ("☾" if is_sleeping else "●")))
         self._wave_lbl.config(text=wave, fg=accent)
         clock_str = datetime.now().strftime("%I:%M %p").lstrip("0")
-        if self.is_listening:
+        if is_dashing:
+            badge = f"SEARCHING · {clock_str}"
+        elif self.is_listening:
             badge = f"LISTENING · {clock_str}"
         elif is_thinking:
             badge = f"THINKING · {clock_str}"
@@ -835,7 +925,14 @@ class RynaRobotDesktop:
 
     def quit_app(self) -> None:
         self.running = False
+        self.core.physical_app_launcher = None
         self.core.voice.interrupt("Exiting RYNA")
+        if self._settings_panel is not None:
+            try:
+                self._settings_panel.close()
+            except Exception:
+                pass
+            self._settings_panel = None
         if self._tray_icon:
             try:
                 self._tray_icon.stop()
