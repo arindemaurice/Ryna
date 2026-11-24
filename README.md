@@ -8,11 +8,11 @@
     - **Walking**: 4-phase alternating stride (`ryna_walk_a.png` → `ryna_walk_mid.png` → `ryna_walk_b.png` → `ryna_walk_mid.png`) facing right & left so her legs visibly interchange step-by-step.
     - **Thinking**: Stops walking, stands upright, looks **straight forward**, and raises her hand to touch her head (`ryna_think.png`).
     - **Sitting & Sleeping**: Relaxed seated pose (`ryna_sit.png`) and peaceful sleeping pose (`ryna_sleep.png`) with floating animated cyan `z Z`.
-- **Autonomous Time-of-Day Routine**:
-  - **Night (`22:00–05:59`)**: Sleeps peacefully on your desktop until you click her.
-  - **Morning (`06:00–11:59`)**: Energetic walking patrols with brief standing pauses.
-  - **Afternoon (`12:00–17:59`)**: Balanced mix of walking, sitting, and standing.
-  - **Evening (`18:00–21:59`)**: Relaxed sitting with gentle strolls and brief naps.
+- **Autonomous Time-of-Day Routine (Sitting-First)**:
+  - **Night (`22:00–05:59`)**: Sleeps peacefully on your desktop (80%) with quiet sitting (20%); wakes immediately when clicked.
+  - **Morning (`06:00–11:59`)**: Mostly sitting comfortably (62%), with occasional short walks (26%) and standing pauses (12%).
+  - **Afternoon (`12:00–17:59`)**: Mostly sitting (68%), with occasional walks (20%) and standing (12%).
+  - **Evening (`18:00–21:59`)**: Mostly relaxed sitting (70%), brief naps (15%), and occasional strolls (10%).
 - **Click-to-Talk + Live Dictation Box Above RYNA**:
   - Click RYNA → she stops/wakes, calmly says *"I'm here. What would you like me to help you with?"*, and automatically opens your microphone.
   - A dedicated **YOU SPOKE** box directly above RYNA shows a live audio level meter and your dictated words as you speak, keeping them visible while she thinks and responds plainly in a calm voice.

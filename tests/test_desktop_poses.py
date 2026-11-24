@@ -52,22 +52,22 @@ class TestDesktopPosesAndSchedule(unittest.TestCase):
 
         period_morning, w_morning = time_of_day_weights(9)
         self.assertEqual(period_morning, "MORNING")
-        self.assertGreater(dict(w_morning)["walk"], 0.5)
+        self.assertGreater(dict(w_morning)["sit"], 0.55)
 
         period_afternoon, w_afternoon = time_of_day_weights(14)
         self.assertEqual(period_afternoon, "AFTERNOON")
-        self.assertIn("sit", dict(w_afternoon))
+        self.assertGreater(dict(w_afternoon)["sit"], 0.6)
         self.assertIn("walk", dict(w_afternoon))
 
         period_evening, w_evening = time_of_day_weights(20)
         self.assertEqual(period_evening, "EVENING")
-        self.assertGreater(dict(w_evening)["sit"], 0.4)
+        self.assertGreater(dict(w_evening)["sit"], 0.6)
 
         rng = random.Random(42)
         night_actions = [choose_timed_action(2, walk_enabled=True, rng=rng)[0] for _ in range(30)]
         self.assertIn("sleep", night_actions)
         morning_actions = [choose_timed_action(9, walk_enabled=True, rng=rng)[0] for _ in range(30)]
-        self.assertIn("walk", morning_actions)
+        self.assertGreater(morning_actions.count("sit"), morning_actions.count("walk"))
 
     def test_robot_window_poses_dictation_and_voice_commands(self) -> None:
         with tempfile.TemporaryDirectory() as td:

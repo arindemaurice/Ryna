@@ -62,15 +62,18 @@ GREETING_PROMPT = "I'm here. What would you like me to help you with?"
 
 
 def time_of_day_weights(hour: int) -> tuple[str, list[tuple[str, float]]]:
-    """Return (period_label, weighted idle actions) based on local hour (0-23)."""
+    """Return (period_label, weighted idle actions) based on local hour (0-23).
+    RYNA spends most of the day sitting comfortably, with occasional short walks/stands,
+    and sleeps peacefully at night.
+    """
     h = int(hour) % 24
     if h >= 22 or h < 6:
-        return "NIGHT", [("sleep", 0.85), ("sit", 0.15)]
+        return "NIGHT", [("sleep", 0.80), ("sit", 0.20)]
     if 6 <= h < 12:
-        return "MORNING", [("walk", 0.62), ("stand", 0.25), ("sit", 0.13)]
+        return "MORNING", [("sit", 0.62), ("walk", 0.26), ("stand", 0.12)]
     if 12 <= h < 18:
-        return "AFTERNOON", [("walk", 0.44), ("sit", 0.36), ("stand", 0.20)]
-    return "EVENING", [("sit", 0.48), ("walk", 0.24), ("sleep", 0.16), ("stand", 0.12)]
+        return "AFTERNOON", [("sit", 0.68), ("walk", 0.20), ("stand", 0.12)]
+    return "EVENING", [("sit", 0.70), ("sleep", 0.15), ("walk", 0.10), ("stand", 0.05)]
 
 
 def choose_timed_action(hour: int, walk_enabled: bool = True, rng: random.Random | None = None) -> tuple[str, float]:
@@ -79,7 +82,7 @@ def choose_timed_action(hour: int, walk_enabled: bool = True, rng: random.Random
     _label, weights = time_of_day_weights(hour)
     filtered = [(act, w) for act, w in weights if walk_enabled or act != "walk"]
     if not filtered:
-        filtered = [("stand", 1.0)]
+        filtered = [("sit", 1.0)]
     total = sum(w for _, w in filtered)
     pick = r.random() * total
     acc = 0.0
@@ -91,12 +94,12 @@ def choose_timed_action(hour: int, walk_enabled: bool = True, rng: random.Random
             break
 
     if chosen == "sleep":
-        return "sleep", r.uniform(22.0, 45.0)
+        return "sleep", r.uniform(25.0, 50.0)
     if chosen == "sit":
-        return "sit", r.uniform(9.0, 18.0)
+        return "sit", r.uniform(20.0, 38.0)
     if chosen == "walk":
-        return "walk", r.uniform(5.0, 10.0)
-    return "stand", r.uniform(3.5, 6.5)
+        return "walk", r.uniform(4.0, 7.5)
+    return "stand", r.uniform(3.0, 5.5)
 
 
 class RynaRobotDesktop:
@@ -126,12 +129,16 @@ class RynaRobotDesktop:
         self.walk_speed = 2.5
 
         # Autonomous time-of-day action state ('walk' | 'stand' | 'sit' | 'sleep')
-        self.manual_pose: str | None = None  # Set when user says "sit down", "go to sleep", "stand up", etc.
-        init_act, init_dur = choose_timed_action(datetime.now().hour, walk_enabled=self.walk_enabled)
-        self.current_action = init_act
-        self.action_until = time.monotonic() + init_dur
-        if self.current_action == "sleep":
+        # Start comfortably sitting during the day/evening and sleeping at night
+        self.manual_pose: str | None = None
+        period_now, _ = time_of_day_weights(datetime.now().hour)
+        if period_now == "NIGHT":
+            self.current_action = "sleep"
+            self.action_until = time.monotonic() + random.uniform(25.0, 45.0)
             self.core.voice.set_state("sleeping")
+        else:
+            self.current_action = "sit"
+            self.action_until = time.monotonic() + random.uniform(22.0, 38.0)
 
         self.is_listening = False
         self.is_generating = False
