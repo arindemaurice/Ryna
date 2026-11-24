@@ -144,6 +144,7 @@ class RynaRobotDesktop:
         self._nav_target: tuple[float, float] | None = None
         self._nav_done_event: threading.Event | None = None
         self._nav_speed = 32.0
+        self._next_reminder_check = time.monotonic() + 3.0
         self._drag_x = 0
         self._drag_y = 0
         self._dragged = False
@@ -765,6 +766,17 @@ class RynaRobotDesktop:
 
         # Update time-of-day autonomous action when RYNA is idle (unless locked by a voice pose command)
         if not busy:
+            if now >= self._next_reminder_check:
+                self._next_reminder_check = now + 3.0
+                try:
+                    due = self.core.check_due_reminders()
+                    if due:
+                        msg = due[0].get("content") or due[0].get("title") or "Your reminder is due."
+                        self.current_action = "stand"
+                        self._show_bubble(f"Reminder: {msg}", dictation_text="", show_mic_bar=False, duration=12.0)
+                        self.core.voice.enqueue_sentence(f"Reminder. {msg}")
+                except Exception:
+                    pass
             if self.manual_pose is not None:
                 self.current_action = self.manual_pose
             elif now >= self.action_until:

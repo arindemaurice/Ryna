@@ -16,6 +16,7 @@ from typing import Any, Callable
 from ai.config import RynaConfig
 from ai.local_models.detector import check_internet_connectivity, detect_hardware
 from computer.controller import ComputerController
+from computer.system_manager import RynaSystemManager
 from database.store import RynaDatabase
 from security.privacy import wrap_untrusted_web_content
 
@@ -53,10 +54,11 @@ def safe_calculate(expression: str) -> float | int:
 
 
 class ToolRegistry:
-    def __init__(self, config: RynaConfig, db: RynaDatabase, computer: ComputerController) -> None:
+    def __init__(self, config: RynaConfig, db: RynaDatabase, computer: ComputerController, sys_mgr: RynaSystemManager | None = None) -> None:
         self.config = config
         self.db = db
         self.computer = computer
+        self.sys_mgr = sys_mgr or RynaSystemManager(config.project_root)
         self._handlers: dict[str, Callable[[dict[str, Any]], Any]] = {
             "calculate": self._calc,
             "current_time": self._current_time,
@@ -65,18 +67,29 @@ class ToolRegistry:
             "file_write": self._file_write,
             "create_note": self._create_note,
             "system_diagnostics": self._diagnostics,
+            "system_info": self._system_info,
+            "tech_doctor": self._tech_doctor,
             "active_window": self._active_window,
             "screen_capture": self._screen_capture,
+            "ocr_screen": self._ocr_screen,
             "open_application": self._open_app,
             "close_application": self._close_app,
             "list_apps": self._list_apps,
             "open_folder": self._open_folder,
+            "open_project": self._open_project,
+            "user_file_list": self._user_file_list,
+            "user_file_find": self._user_file_find,
+            "user_file_read": self._user_file_read,
+            "user_file_recycle": self._user_file_recycle,
             "volume_control": self._volume_control,
             "brightness_control": self._brightness_control,
             "battery_status": self._battery_status,
             "computer_shortcut": self._computer_shortcut,
             "open_settings_page": self._open_settings_page,
             "media_search": self._media_search,
+            "weather": self._weather,
+            "type_active_app": self._type_active_app,
+            "power_control": self._power_control,
             "clipboard_get": self._clipboard_get,
             "clipboard_set": self._clipboard_set,
             "web_fetch": self._web_fetch,
@@ -231,6 +244,57 @@ class ToolRegistry:
 
     def _clipboard_set(self, args: dict[str, Any]) -> dict[str, Any]:
         return self.computer.clipboard_set(str(args.get("text", "")))
+
+    def _system_info(self, _args: dict[str, Any]) -> dict[str, Any]:
+        bat = self.computer.battery_status()
+        telemetry = self.sys_mgr.sample_telemetry(battery_info=bat)
+        telemetry["summary"] = self.sys_mgr.system_info_summary(battery_info=bat)
+        return telemetry
+
+    def _tech_doctor(self, args: dict[str, Any]) -> dict[str, Any]:
+        recent = self.db.list_activity(limit=30)
+        return self.sys_mgr.diagnose_issues(str(args.get("text", "")), recent_activity=recent)
+
+    def _ocr_screen(self, args: dict[str, Any]) -> dict[str, Any]:
+        src = str(args.get("source", "screen")).lower()
+        if src == "file" and args.get("path"):
+            img_path = self.sys_mgr.resolve_user_path(str(args["path"]))
+            return self.sys_mgr.ocr_image(img_path)
+        cap = self.computer.capture_screen()
+        res = self.sys_mgr.ocr_image(Path(cap["path"]))
+        res["active_window"] = cap.get("active_window", "")
+        return res
+
+    def _open_project(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.sys_mgr.find_and_open_project(str(args.get("name", "")))
+
+    def _user_file_list(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.sys_mgr.list_user_folder(str(args.get("folder", "documents")))
+
+    def _user_file_find(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.sys_mgr.find_user_files(str(args.get("query", "")), args.get("folder"))
+
+    def _user_file_read(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.sys_mgr.read_user_file(str(args.get("path", "")))
+
+    def _user_file_recycle(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.sys_mgr.recycle_user_file(str(args.get("path", "")))
+
+    def _weather(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.sys_mgr.get_weather(str(args.get("city", "")))
+
+    def _type_active_app(self, args: dict[str, Any]) -> dict[str, Any]:
+        win = self.computer.active_window_title().get("title", "")
+        return self.sys_mgr.type_in_active_app(str(args.get("text", "")), active_window_title=win)
+
+    def _power_control(self, args: dict[str, Any]) -> dict[str, Any]:
+        mode = str(args.get("mode", "request")).lower()
+        action = str(args.get("action", "shutdown")).lower()
+        if mode == "cancel":
+            return self.sys_mgr.cancel_power_action()
+        if mode == "confirm":
+            return self.sys_mgr.confirm_power_action(action)
+        return self.sys_mgr.request_power_action(action)
 
     def _web_search(self, args: dict[str, Any]) -> dict[str, Any]:
         q = str(args.get("query", "")).strip()

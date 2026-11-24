@@ -363,6 +363,11 @@ class RynaDatabase:
             rows = self._conn.execute("SELECT * FROM notes ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             return [{**dict(r), "completed": bool(r["completed"])} for r in rows]
 
+    def complete_note(self, note_id: str) -> bool:
+        with self.transaction() as conn:
+            cur = conn.execute("UPDATE notes SET completed = 1, updated_at = ? WHERE id = ?", (utc_now(), note_id))
+            return cur.rowcount > 0
+
     def log_action(
         self,
         action_type: str,

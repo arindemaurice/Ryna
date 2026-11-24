@@ -1,5 +1,5 @@
-"""Modular Windows desktop control, fast physical Windows Search app launcher,
-and Jarvis-ported system capability algorithms (StartApps discovery, polite close,
+"""RYNA Windows desktop control, fast physical Windows Search app launcher,
+and full local system capability algorithms (StartApps discovery, polite close,
 folders, volume, brightness, battery, settings pages, media links, clipboard, screen vision).
 """
 
@@ -261,7 +261,7 @@ class ComputerController:
             "active_window": win.get("title", ""),
         }
 
-    # --- Jarvis-Ported StartApps Discovery (Find ANY Installed Windows App) ---
+    # --- Windows StartApps Discovery (Find ANY Installed Windows App) ---
     def list_installed_apps(self, refresh: bool = False) -> list[dict[str, str]]:
         if sys.platform != "win32":
             return []
@@ -373,7 +373,7 @@ class ComputerController:
                 except Exception:
                     pass
 
-        # Dynamic Start Menu Apps lookup (ported from Jarvis windows-actions.ps1!)
+        # Dynamic Start Menu Apps lookup
         search_term = spec["name"] if spec and spec.get("name") else raw
         if sys.platform == "win32":
             start_app = self._find_start_app(search_term)

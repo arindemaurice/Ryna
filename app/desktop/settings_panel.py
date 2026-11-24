@@ -45,7 +45,7 @@ class RynaSettingsMonitorWindow:
         self.win.protocol("WM_DELETE_WINDOW", self.close)
 
         # Position cleanly near RYNA without going off-screen
-        pw, ph = 460, 620
+        pw, ph = 475, 685
         sx = int(max(20, min(robot.sw - pw - 20, robot.pos_x - pw - 16 if robot.pos_x > pw + 40 else robot.pos_x + robot.win_w + 16)))
         sy = int(max(20, min(robot.sh - ph - 60, robot.pos_y + robot.win_h - ph)))
         self.win.geometry(f"{pw}x{ph}+{sx}+{sy}")
@@ -83,6 +83,7 @@ class RynaSettingsMonitorWindow:
         self._mon_vars: dict[str, tk.StringVar] = {
             "state": tk.StringVar(value="—"),
             "schedule": tk.StringVar(value="—"),
+            "health": tk.StringVar(value="—"),
             "ai": tk.StringVar(value="—"),
             "voice": tk.StringVar(value="—"),
             "battery": tk.StringVar(value="—"),
@@ -91,6 +92,7 @@ class RynaSettingsMonitorWindow:
         rows = [
             ("Action / State", "state"),
             ("Time Routine", "schedule"),
+            ("System Health", "health"),
             ("AI Engine", "ai"),
             ("Voice & Mic", "voice"),
             ("Power", "battery"),
@@ -101,6 +103,31 @@ class RynaSettingsMonitorWindow:
         for idx, (lbl, key) in enumerate(rows):
             tk.Label(grid, text=lbl, fg=TEXT_MUTED, bg=BG_CARD, font=("Segoe UI", 8), width=14, anchor="w").grid(row=idx, column=0, sticky="w", pady=1)
             tk.Label(grid, textvariable=self._mon_vars[key], fg=TEXT_MAIN, bg=BG_CARD, font=("Segoe UI", 8, "bold"), anchor="w").grid(row=idx, column=1, sticky="w", pady=1)
+
+        # Quick System Management Actions
+        sys_row = tk.Frame(mon, bg=BG_CARD)
+        sys_row.pack(fill="x", pady=(6, 0))
+        for lbl, fn in (
+            ("Health Check", self._run_health_check),
+            ("Desktop", lambda: self.core.computer.computer_shortcut("show_desktop")),
+            ("Mute", lambda: self.core.computer.volume_control("mute")),
+            ("Lock PC", lambda: self.core.computer.computer_shortcut("lock_screen")),
+            ("Cancel Shutdown", self._cancel_shutdown),
+        ):
+            tk.Button(
+                sys_row,
+                text=lbl,
+                command=fn,
+                bg=BG_INPUT,
+                fg=CYAN_SOFT,
+                activebackground=CYAN,
+                activeforeground="#04101f",
+                relief="flat",
+                padx=5,
+                pady=3,
+                font=("Segoe UI", 7, "bold"),
+                cursor="hand2",
+            ).pack(side="left", expand=True, fill="x", padx=2)
 
         # --- 2. Pose & Routine Controls ---
         pose_box = self._section(container, "POSE & AUTONOMOUS ACTIONS")
@@ -318,6 +345,22 @@ class RynaSettingsMonitorWindow:
             self.core.db.set_setting("ai.local_model", m)
             self.core.warm_up_async()
 
+    def _run_health_check(self) -> None:
+        bat = self.core.computer.battery_status()
+        summary = self.core.sys_mgr.system_info_summary(battery_info=bat)
+        doc = self.core.sys_mgr.diagnose_issues(recent_activity=self.core.db.list_activity(limit=20))
+        msg = f"{summary} {doc['summary']}"
+        self.core.record_activity("system", "health_check", summary[:120], "ok")
+        self.robot._show_bubble(msg, dictation_text="", duration=12.0)
+        self.core.voice.enqueue_sentence(summary)
+        self._refresh_live(schedule_next=False)
+
+    def _cancel_shutdown(self) -> None:
+        res = self.core.sys_mgr.cancel_power_action()
+        self.core.record_activity("system", "power_cancel", res["message"], "ok")
+        self.robot._show_bubble(res["message"], dictation_text="", duration=6.0)
+        self._refresh_live(schedule_next=False)
+
     def _hide_all(self) -> None:
         self.close()
         self.robot.hide_to_tray()
@@ -347,6 +390,13 @@ class RynaSettingsMonitorWindow:
 
             bat = self.core.computer.battery_status()
             self._mon_vars["battery"].set(f"{bat['percent']}% ({bat['state']})" if bat.get("has_battery") else "AC / Desktop Power")
+
+            # Live real RAM / Disk telemetry (fast ctypes + disk_usage)
+            tel = self.core.sys_mgr.sample_telemetry(battery_info=bat)
+            cpu_part = f"CPU {tel['cpu_percent']:.0f}% | " if tel.get("cpu_percent") is not None else ""
+            self._mon_vars["health"].set(
+                f"{tel['health']}  ({cpu_part}RAM {tel['ram_used_gb']}/{tel['ram_total_gb']}GB | Disk {tel['disk_free_gb']}GB free)"
+            )
 
             db_stats = self.core.db.stats()
             self._mon_vars["stats"].set(f"{db_stats.get('memories', 0)} memories  |  {db_stats.get('messages', 0)} msgs  |  {db_stats.get('activity_logs', 0)} events")

@@ -149,7 +149,7 @@ class TestDesktopPosesAndSchedule(unittest.TestCase):
                     app.quit_app()
                 core.close()
 
-    def test_jarvis_ported_app_registry_and_battery(self) -> None:
+    def test_ryna_app_registry_and_aliases(self) -> None:
         from computer.controller import resolve_app_spec
 
         k_word, s_word = resolve_app_spec("Microsoft Word")
@@ -165,6 +165,68 @@ class TestDesktopPosesAndSchedule(unittest.TestCase):
         self.assertEqual(k_pc, "thispc")
         assert s_pc is not None
         self.assertEqual(s_pc["folder"], "thispc")
+
+    def test_ryna_system_manager_files_power_doctor_and_reminders(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from computer.system_manager import RynaSystemManager
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            home = base / "home"
+            (home / "Documents").mkdir(parents=True)
+            mgr = RynaSystemManager(self.project_root, home_dir=home)
+
+            # Safe file write/read/copy/move/recycle inside user profile
+            w = mgr.write_user_file("Documents/hello.txt", "RYNA system test")
+            self.assertTrue(w["written"])
+            r = mgr.read_user_file("Documents/hello.txt")
+            self.assertEqual(r["content"], "RYNA system test")
+
+            # Executable/script write blocked
+            with self.assertRaises(PermissionError):
+                mgr.write_user_file("Documents/bad.ps1", "Write-Host hi")
+
+            # Escape outside user profile blocked
+            with self.assertRaises(PermissionError):
+                mgr.resolve_user_path("C:/Windows/System32/cmd.exe")
+
+            # Two-step power confirmation + cancel
+            req = mgr.request_power_action("shutdown")
+            self.assertTrue(req["needs_confirmation"])
+            can = mgr.cancel_power_action()
+            self.assertTrue(can["cancelled"])
+            with self.assertRaises(ValueError):
+                mgr.confirm_power_action("shutdown")
+
+            # Live telemetry & RYNA Tech Doctor (always RYNA, zero Jarvis/Ultron branding)
+            tel = mgr.sample_telemetry()
+            self.assertIn(tel["health"], ("HEALTHY", "WARNING"))
+            doc = mgr.diagnose_issues("Ollama connection refused on 11434")
+            self.assertTrue(doc["findings"])
+            self.assertNotIn("jarvis", doc["summary"].lower())
+            self.assertNotIn("ultron", doc["summary"].lower())
+
+            # Due reminder check in RynaCore SQLite
+            cfg = RynaConfig.load(
+                overrides={
+                    "project_root": self.project_root,
+                    "data_dir": base / "data",
+                    "db_path": base / "data" / "ryna.db",
+                    "log_dir": base / "data" / "logs",
+                    "backup_dir": base / "data" / "backups",
+                }
+            )
+            core = RynaCore(cfg)
+            try:
+                past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+                core.db.create_note("Stretch", "Time to stretch!", remind_at=past)
+                due = core.check_due_reminders()
+                self.assertEqual(len(due), 1)
+                self.assertEqual(due[0]["title"], "Stretch")
+                # Second check should not fire twice
+                self.assertEqual(core.check_due_reminders(), [])
+            finally:
+                core.close()
 
 
 if __name__ == "__main__":

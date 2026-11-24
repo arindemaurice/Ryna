@@ -17,12 +17,14 @@
   - Click RYNA → she stops/wakes, calmly says *"I'm here. What would you like me to help you with?"*, and automatically opens your microphone.
   - A dedicated **YOU SPOKE** box directly above RYNA shows a live audio level meter and your dictated words as you speak, keeping them visible while she thinks and responds plainly in a calm voice.
   - Click RYNA while she is speaking (or press `Esc`) for instant `<1ms` barge-in interruption.
-- **Fast Physical Search-Bar App Launch & Windows Controls (`computer/controller.py`)**:
-  - Say `"open word"`, `"open spotify"`, `"open chrome"`, or any installed Windows app → RYNA briskly walks down to your Windows Search bar, triggers Windows Search (`Win+S`), types the app name via native Win32 `SendInput`, and presses `Enter` to open it in under a second (with automatic StartApps / URI / web fallbacks).
-  - Also supports polite app closing (`"close notepad"`), folders (`"open downloads"`, `"open this pc"`, `"open recycle bin"`), volume (`"volume up/down/mute"`, `"set volume to 50"`), brightness (`"brightness up/down"`), battery status, Windows Settings pages (`"open wifi settings"`), shortcuts (`"show desktop"`, `"switch window"`, `"lock screen"`), clipboard, and YouTube / Spotify / Maps searches.
+- **Full Windows System Management (`computer/controller.py` & `computer/system_manager.py`)**:
+  - **Fast Physical Search-Bar App Launch**: Say `"open word"`, `"open spotify"`, `"open chrome"`, or any installed Windows app → RYNA briskly runs down to your Windows Search bar, triggers Windows Search (`Win+S`), types the app name via native Win32 `SendInput`, and presses `Enter` to open it in under a second (with automatic StartApps / URI / web fallbacks).
+  - **Safe User-Profile File Management**: List/find/open/read/copy/move files inside `Desktop`, `Documents`, `Downloads`, `Pictures`, and `RYNA-Workspace`, open project folders, and safely send files to the Recycle Bin (blocks executable writes and path escapes).
+  - **Offline Windows Screen OCR & Active-App Typing**: Say `"read my screen"` (built-in Windows WinRT OCR, 100% offline) or `"type ..."` to dictate directly into your active app.
+  - **Live System Health, Power & Reminders**: Say `"system info"`, `"system health"`, `"diagnose errors"`, `"battery status"`, `"volume up/down/mute"`, `"brightness up/down"`, `"show desktop"`, `"lock screen"`, `"open wifi settings"`, `"set a 5 minute timer"`, `"remind me to ... in 10 minutes"`, `"weather in ..."`, or two-step confirmed `"shut down computer"` / `"restart computer"` / `"sign out"` + `"cancel shutdown"`.
 - **Right-Click Monitor & Settings Panel (`app/desktop/settings_panel.py`)**:
   - **Left-click RYNA**: Greet, listen, display your dictation above her, think touching her head, and reply calmly (or interrupt mid-speech).
-  - **Right-click RYNA**: Opens the live **RYNA Monitor & Settings** window showing real-time state, time-of-day routine, AI model, voice/mic status, battery, recent activity log, and live controls for poses, walking, physical Search-bar launching, size, speech speed, voice, and local model.
+  - **Right-click RYNA**: Opens the live **RYNA Monitor & Settings** window showing real-time state, time-of-day routine, live CPU/RAM/Disk health telemetry, AI model, voice/mic status, battery, recent activity log, one-click system buttons (`Health Check`, `Desktop`, `Mute`, `Lock PC`, `Cancel Shutdown`), and live robot controls.
 - **Voice-Controlled Settings & Poses**:
   - Poses: `"sit down"`, `"stand up"`, `"go to sleep"`, `"wake up"`, `"walk around"`, `"stop walking"`, `"resume schedule"`.
   - Voice & Size: `"speak faster"`, `"speak slower"`, `"normal speed"`, `"be bigger"`, `"be smaller"`, `"keep listening"`, `"push to talk"`.

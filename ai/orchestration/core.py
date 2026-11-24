@@ -6,7 +6,7 @@ import json
 import queue
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -17,6 +17,7 @@ from ai.local_models.detector import check_internet_connectivity, detect_hardwar
 from ai.providers.base import AIResponse, ChatMessage, ProviderError
 from ai.routing.router import AIRouter
 from computer.controller import ComputerController
+from computer.system_manager import RynaSystemManager
 from database.store import RynaDatabase, new_id
 from integrations.registry import build_integration_report
 from memory.engine import MemoryEngine
@@ -66,7 +67,8 @@ class RynaCore:
         self.memory = MemoryEngine(self.db)
         self.permissions = PermissionEngine(self.db)
         self.computer = ComputerController(self.db, screenshots_dir=self.config.data_dir / "screenshots")
-        self.tools = ToolRegistry(self.config, self.db, self.computer)
+        self.sys_mgr = RynaSystemManager(self.config.project_root)
+        self.tools = ToolRegistry(self.config, self.db, self.computer, sys_mgr=self.sys_mgr)
         self.tasks = AgentTaskEngine(self.db, self.permissions, self.tools, connectivity_checker=self._check_online)
         self.ai = AIRouter(self.config, self.db, connectivity_checker=self._check_online)
         self.voice = VoiceManager(self.db)
@@ -159,6 +161,18 @@ class RynaCore:
             "hardware": hw.to_dict(),
             "database": self.db.stats(),
         }
+
+    def check_due_reminders(self) -> list[dict[str, Any]]:
+        """Check SQLite notes with remind_at timestamps, mark due items completed, and return them."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        due: list[dict[str, Any]] = []
+        for note in self.db.list_notes(limit=100):
+            rem = note.get("remind_at")
+            if not note.get("completed") and rem and str(rem) <= now_iso:
+                self.db.complete_note(note["id"])
+                due.append(note)
+                self.record_activity("system", "reminder_due", f"Reminder triggered: {note['title']}", "ok")
+        return due
 
     def create_backup(self) -> dict[str, Any]:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -267,8 +281,8 @@ class RynaCore:
             self.set_robot_state("idle")
 
     def _try_natural_action(self, text: str, conv_id: str, online: bool) -> dict[str, Any] | None:
-        """Execute verified real local/online actions (including Jarvis-ported Windows capabilities
-        and fast physical Search-bar app opening) when user gives natural spoken or typed commands.
+        """Execute verified real local/online system-management actions (including fast physical
+        Search-bar app opening, files, OCR, power, timers, and telemetry) for RYNA.
         """
         raw = text.strip()
         # Strip polite conversational lead-ins ("please", "can you", "could you", "go and")
@@ -313,6 +327,107 @@ class RynaCore:
         # 2. Battery status (instant Win32 offline)
         if re.match(r"^(?:what(?:'s| is) )?(?:my |the )?battery(?: level| status| percentage| life)?$|^how much battery(?: do i have| is left)?$", low):
             return _exec_action("battery_status", {}, "battery", lambda r: str(r.get("detail", "Checked battery.")), "Battery")
+
+        # 2b. System health / specs / RYNA Tech Doctor (100% offline)
+        if re.match(r"^(?:show |tell me |what(?:'s| is) )?(?:my |the )?(?:system|computer|pc|laptop) (?:info|information|specs|details|health|status)$|^how much (?:ram|memory|disk) do i have$|^run (?:system )?(?:diagnostics|health check)$", low):
+            return _exec_action("system_info", {}, "system_info", lambda r: str(r.get("summary", "System looks healthy.")), "System Health")
+        if re.match(r"^(?:diagnose|analyze|check)\s+(?:errors?|logs?|issues?|problems?)$|^what went wrong$|^system doctor$", low):
+            return _exec_action("tech_doctor", {}, "tech_doctor", lambda r: str(r.get("summary", "No errors found.")), "RYNA Doctor")
+
+        # 2c. Offline Windows Screen OCR ("read my screen", "read text on my screen")
+        if re.match(r"^(?:read|scan|ocr)(?: all)?(?: the)?(?: text)? (?:on|from|in) (?:my |the )?screen$|^(?:read|scan|ocr) (?:my |the )?screen$", low):
+            return _exec_action(
+                "ocr_screen", {"source": "screen"}, "screen_ocr",
+                lambda r: "I couldn't find readable text on your screen." if r.get("empty") else f"On your screen I see: {str(r.get('text', ''))[:280]}",
+                "Screen OCR",
+            )
+
+        # 2d. Timers & Reminders ("set a 5 minute timer", "remind me to ... in 10 minutes", "list my reminders")
+        m_timer = re.match(r"^(?:set|start)\s+(?:a\s+)?(?:(\d+)\s*(seconds?|minutes?|hours?)\s+timer|timer\s+(?:for\s+)?(\d+)\s*(seconds?|minutes?|hours?))$", low)
+        if m_timer:
+            amt = int(m_timer.group(1) or m_timer.group(3))
+            unit = (m_timer.group(2) or m_timer.group(4)).lower()
+            if 1 <= amt <= 1000:
+                sec = amt * (1 if unit.startswith("second") else 60 if unit.startswith("minute") else 3600)
+                due_iso = (datetime.now(timezone.utc) + timedelta(seconds=sec)).isoformat()
+                label = f"{amt}-{unit.rstrip('s')} timer"
+                self.db.create_note(f"Timer: {label}", f"Your {label} is done.", remind_at=due_iso)
+                reply = f"Timer set for {amt} {unit}."
+                self.record_activity("system", "timer_set", reply, "ok")
+                return self.db.add_message(conv_id, "assistant", reply, provider="ryna_system", model="timer", mode="offline")
+
+        m_rem_in = re.match(r"^remind me (?:to\s+)?(.+?)\s+in\s+(\d+)\s*(seconds?|minutes?|hours?)$", stripped, re.IGNORECASE)
+        if m_rem_in:
+            what, amt, unit = m_rem_in.group(1).strip(), int(m_rem_in.group(2)), m_rem_in.group(3).lower()
+            if 1 <= amt <= 1000:
+                sec = amt * (1 if unit.startswith("second") else 60 if unit.startswith("minute") else 3600)
+                due_iso = (datetime.now(timezone.utc) + timedelta(seconds=sec)).isoformat()
+                self.db.create_note(what[:60], what, remind_at=due_iso)
+                reply = f"Okay, I'll remind you to {what} in {amt} {unit}."
+                self.record_activity("system", "reminder_set", reply, "ok")
+                return self.db.add_message(conv_id, "assistant", reply, provider="ryna_system", model="reminder", mode="offline")
+
+        if re.match(r"^(?:list|show|what are)(?: all)?(?: my)? reminders$|^what reminders do i have$", low):
+            active = [n for n in self.db.list_notes(limit=50) if n.get("remind_at") and not n.get("completed")]
+            reply = "You have no active reminders." if not active else "Your active reminders are: " + "; ".join(n["title"] for n in active[:6]) + "."
+            return self.db.add_message(conv_id, "assistant", reply, provider="ryna_system", model="reminder", mode="offline")
+
+        # 2e. Power control with strict two-step confirmation ("shut down computer", "confirm shutdown", "cancel shutdown")
+        if re.match(r"^(?:cancel|stop|abort) (?:the )?(?:shutdown|restart|reboot|sign out)$", low):
+            return _exec_action("power_control", {"mode": "cancel"}, "cancel_power", lambda r: str(r["message"]), "Power")
+        if re.match(r"^(?:confirm|yes,? confirm) (?:the )?shutdown$", low):
+            return _exec_action("power_control", {"mode": "confirm", "action": "shutdown"}, "confirm_shutdown", lambda r: str(r["message"]), "Shutdown")
+        if re.match(r"^(?:confirm|yes,? confirm) (?:the )?(?:restart|reboot)$", low):
+            return _exec_action("power_control", {"mode": "confirm", "action": "restart"}, "confirm_restart", lambda r: str(r["message"]), "Restart")
+        if re.match(r"^(?:confirm|yes,? confirm) (?:the )?(?:sign out|log out|log off)$", low):
+            return _exec_action("power_control", {"mode": "confirm", "action": "signout"}, "confirm_signout", lambda r: str(r["message"]), "Sign Out")
+        if re.match(r"^(?:turn off|shut down|shutdown|power off)(?: my| the)? (?:computer|pc|laptop|windows)(?: now)?$", low):
+            return _exec_action("power_control", {"mode": "request", "action": "shutdown"}, "request_shutdown", lambda r: str(r["message"]), "Confirm Shutdown")
+        if re.match(r"^(?:restart|reboot)(?: my| the)? (?:computer|pc|laptop|windows)(?: now)?$", low):
+            return _exec_action("power_control", {"mode": "request", "action": "restart"}, "request_restart", lambda r: str(r["message"]), "Confirm Restart")
+        if re.match(r"^(?:sign out|log out|log off)(?: of windows| my computer| now)?$", low):
+            return _exec_action("power_control", {"mode": "request", "action": "signout"}, "request_signout", lambda r: str(r["message"]), "Confirm Sign Out")
+
+        # 2f. Active-app typing ("type hello world", "dictate ...")
+        m_type = re.match(r"^(?:type|dictate)\s+(.+)$", stripped, re.IGNORECASE)
+        if m_type and len(m_type.group(1).strip()) >= 2:
+            txt_to_type = m_type.group(1).strip()
+            return _exec_action("type_active_app", {"text": txt_to_type}, "active_app", lambda r: f"Typed that into {r.get('target_window', 'your active app')}.", "Dictate")
+
+        # 2g. Live Weather ("weather in Kampala", "what's the weather in London")
+        m_wx = re.match(r"^(?:what(?:'s| is) )?(?:the )?(?:weather|forecast)(?: like)?(?: today| now)?\s+(?:in|for|at)\s+(.+)$", stripped, re.IGNORECASE)
+        if m_wx:
+            city = m_wx.group(1).strip().rstrip(".!?")
+            if not online:
+                return self.db.add_message(conv_id, "system", f"I'm offline right now, so I can't check live weather for {city}.", mode="offline")
+            return _exec_action("weather", {"city": city}, city, lambda r: str(r.get("summary", "Checked weather.")), f"Weather: {city}")
+
+        # 2h. Safe User-Profile File Management (list, find, open project, read, recycle to Recycle Bin)
+        m_flist = re.match(r"^(?:list|show)(?: me)?(?: the)?(?: files(?: in| on)?)?(?: my| the)?\s+(desktop|documents|downloads|pictures|workspace)(?: folder| files)?$", low)
+        if m_flist:
+            fld = m_flist.group(1)
+            return _exec_action(
+                "user_file_list", {"folder": fld}, fld,
+                lambda r: f"{fld.title()} has {r['total']} item(s), including {', '.join(i['name'] for i in r['items'][:6])}." if r["total"] else f"Your {fld.title()} folder is empty.",
+                f"Folder: {fld.title()}",
+            )
+        m_proj = re.match(r"^(?:open|find|show|go to)\s+(?:my |the )?(.{2,40}?)\s+(?:project|project folder)$", stripped, re.IGNORECASE)
+        if m_proj:
+            pname = m_proj.group(1).strip()
+            return _exec_action("open_project", {"name": pname}, pname, lambda r: f"Opened project folder {r['project']}.", "Project Folder")
+        m_ffind = re.match(r"^(?:find|locate|search for)\s+(?:my\s+|the\s+|a\s+)?(?:file|document|folder)?\s*(?:named|called)?\s*([\w .\-]{2,60})$", stripped, re.IGNORECASE)
+        if m_ffind and not re.search(r"\b(web|online|youtube|spotify|weather|flights?)\b", low):
+            q = m_ffind.group(1).strip()
+            if q.lower() not in ("desktop", "documents", "downloads", "pictures"):
+                return _exec_action(
+                    "user_file_find", {"query": q}, q,
+                    lambda r: f"Found {r['count']} match(es) for {q}: {', '.join(Path(p).name for p in r['matches'][:5])}." if r["count"] else f"I couldn't find any file named like {q} in your user folders.",
+                    "File Search",
+                )
+        m_frec = re.match(r"^(?:recycle|trash|move to recycle bin)\s+(?:the\s+)?(?:file\s+)?(.+)$", stripped, re.IGNORECASE)
+        if m_frec:
+            fpath = m_frec.group(1).strip()
+            return _exec_action("user_file_recycle", {"path": fpath}, fpath, lambda r: f"Moved {Path(r['path']).name} to the Recycle Bin.", "Recycle Bin")
 
         # 3. Remember fact/preference into persistent memory
         m_rem = re.match(r"^(?:remember|don'?t forget|keep in mind)\s+(?:that\s+)?(.+)$", stripped, re.IGNORECASE)
