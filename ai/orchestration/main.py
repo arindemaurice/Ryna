@@ -1,18 +1,40 @@
-"""Direct entrypoint for RYNA — Pure Walking Windows Desktop Robot (no web server, no browser)."""
+"""Direct standalone entrypoint for RYNA — Always-On Walking Windows Desktop Robot.
+
+100% independent of any terminal window or external server:
+- Safe under windowless `pythonw.exe` (guards None stdout/stderr, logs cleanly to logs/ryna.log).
+- Ensures working directory is RYNA's project root even when launched from Windows Startup or a Desktop shortcut.
+- Enforces single-instance Windows mutex so RYNA never duplicates.
+"""
 
 from __future__ import annotations
 
 import argparse
+import os
 import signal
+import sys
 
-from ai.config import APP_NAME, VERSION, RynaConfig
+from ai.config import APP_NAME, PROJECT_ROOT, VERSION, RynaConfig
 from ai.orchestration.core import RynaCore
 from app.desktop.robot_window import run_robot_desktop
 from app.desktop.single_instance import SingleInstanceGuard
 
 
+def _ensure_windowless_stdio() -> None:
+    """Under pythonw.exe on Windows, sys.stdout/sys.stderr are None; bind safely to os.devnull."""
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=f"{APP_NAME} {VERSION} — Walking Desktop AI Robot")
+    _ensure_windowless_stdio()
+    try:
+        os.chdir(PROJECT_ROOT)
+    except OSError:
+        pass
+
+    parser = argparse.ArgumentParser(description=f"{APP_NAME} {VERSION} — Always-On Walking Desktop AI Robot")
     parser.add_argument("--allow-multiple", action="store_true", help="Skip single-instance mutex check")
     args = parser.parse_args(argv)
 
@@ -22,9 +44,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     core = RynaCore(RynaConfig.load())
-    signal.signal(signal.SIGINT, lambda *_: None)
+    try:
+        signal.signal(signal.SIGINT, lambda *_: None)
+    except Exception:
+        pass
 
-    print(f"{APP_NAME} {VERSION} — Pure Desktop Robot Active (Model: auto fast local, Voice: persistent Windows SAPI + offline faster-whisper)")
+    core.logger.info("%s %s — Standalone Desktop Robot Active (independent of terminal/server).", APP_NAME, VERSION)
     try:
         run_robot_desktop(core)
     finally:

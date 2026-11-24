@@ -151,6 +151,8 @@ class RynaConfig:
 
 
 def setup_logging(log_dir: Path, level: str = "INFO") -> logging.Logger:
+    import sys
+
     log_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("ryna")
     lvl = getattr(logging, level.upper(), logging.INFO)
@@ -160,8 +162,10 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> logging.Logger:
     fmt = logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s", "%Y-%m-%d %H:%M:%S")
     fh = RotatingFileHandler(log_dir / "ryna.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
     fh.setFormatter(fmt)
-    ch = logging.StreamHandler()
-    ch.setFormatter(fmt)
     logger.addHandler(fh)
-    logger.addHandler(ch)
+    # Only attach console StreamHandler when a real console stderr exists (safe under windowless pythonw.exe)
+    if sys.stderr is not None and hasattr(sys.stderr, "write"):
+        ch = logging.StreamHandler()
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
     return logger

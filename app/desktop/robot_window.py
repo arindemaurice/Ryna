@@ -635,6 +635,20 @@ class RynaRobotDesktop:
             self.root.after(2200, self.hide_to_tray)
             return "Okay, I'll wait in the system tray until you need me."
 
+        if any(p in low for p in ("start with windows", "enable auto start", "turn on auto start", "enable autostart")):
+            from app.desktop.autostart import enable_autostart
+
+            enable_autostart(self.core.config.project_root)
+            self.core.db.set_setting("desktop.startup_enabled", True)
+            return "Done. I'll start automatically every time Windows boots."
+
+        if any(p in low for p in ("don't start with windows", "disable auto start", "turn off auto start", "disable autostart")):
+            from app.desktop.autostart import disable_autostart
+
+            disable_autostart()
+            self.core.db.set_setting("desktop.startup_enabled", False)
+            return "Okay, I removed myself from Windows startup."
+
         if any(p in low for p in ("shut down ryna", "goodbye ryna", "exit ryna", "close ryna")):
             self.root.after(2400, self.quit_app)
             return "Goodbye. Call me whenever you need me."

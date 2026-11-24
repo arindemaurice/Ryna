@@ -154,10 +154,13 @@ class RynaSettingsMonitorWindow:
         toggles = self._section(container, "BEHAVIOR & CAPABILITIES")
         s = self.core.db.get_all_settings()
 
+        from app.desktop.autostart import is_autostart_enabled
+
         self._var_walk = tk.BooleanVar(value=bool(self.robot.walk_enabled))
         self._var_phys_search = tk.BooleanVar(value=bool(s.get("desktop.physical_app_search", True)))
         self._var_topmost = tk.BooleanVar(value=bool(self.robot.always_on_top))
         self._var_cont = tk.BooleanVar(value=bool(self.robot.continuous_voice))
+        self._var_startup = tk.BooleanVar(value=is_autostart_enabled())
         self._var_cloud = tk.BooleanVar(value=bool(s.get("ai.allow_cloud", False)))
         self._var_apps = tk.BooleanVar(value=bool(s.get("computer.allow_app_launch", True)))
         self._var_vision = tk.BooleanVar(value=bool(s.get("computer.allow_screen_vision", True)))
@@ -168,6 +171,7 @@ class RynaSettingsMonitorWindow:
             ("Autonomous Walking", self._var_walk, self._on_toggle_walk),
             ("Search-Bar App Launch", self._var_phys_search, lambda: self.core.db.set_setting("desktop.physical_app_search", bool(self._var_phys_search.get()))),
             ("Always On Top", self._var_topmost, self._on_toggle_topmost),
+            ("Start with Windows", self._var_startup, self._on_toggle_startup),
             ("Continuous Listening", self._var_cont, self._on_toggle_continuous),
             ("Allow Cloud AI", self._var_cloud, lambda: self.core.db.set_setting("ai.allow_cloud", bool(self._var_cloud.get()))),
             ("Allow App Launching", self._var_apps, lambda: self.core.db.set_setting("computer.allow_app_launch", bool(self._var_apps.get()))),
@@ -327,6 +331,22 @@ class RynaSettingsMonitorWindow:
         val = bool(self._var_cont.get())
         self.robot.continuous_voice = val
         self.core.db.set_setting("voice.mode", "continuous" if val else "push_to_talk")
+
+    def _on_toggle_startup(self) -> None:
+        from app.desktop.autostart import disable_autostart, enable_autostart
+
+        val = bool(self._var_startup.get())
+        try:
+            if val:
+                enable_autostart(self.core.config.project_root)
+                self.robot._show_bubble("RYNA will now start automatically with Windows.", dictation_text="", duration=4.5)
+            else:
+                disable_autostart()
+                self.robot._show_bubble("Removed RYNA from Windows Startup.", dictation_text="", duration=4.5)
+            self.core.db.set_setting("desktop.startup_enabled", val)
+        except Exception as exc:
+            self._var_startup.set(not val)
+            self.robot._show_bubble(f"Auto-start update failed: {exc}", dictation_text="", duration=5.5)
 
     def _on_size_change(self, val: str) -> None:
         px = int(float(val))

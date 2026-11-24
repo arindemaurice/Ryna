@@ -34,9 +34,21 @@
   - 100% offline `faster-whisper` (`tiny.en`) + adaptive noise-floor microphone capture.
   - Warm local Ollama (`qwen2.5:1.5b`, `keep_alive: "30m"`) with sentence-by-sentence speech streaming, plus optional cloud providers (Groq / OpenAI / Gemini).
 
-## Run RYNA
+## Run RYNA (Always-On, Detached — Survives Terminal Close & Offline)
+RYNA runs completely standalone via windowless `pythonw.exe` with zero HTTP server or cloud server dependency. Closing your terminal will **never** close RYNA:
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run.ps1
+```
+Or simply **double-click `Start-RYNA.vbs`** (no terminal window at all).
+
+### Start RYNA Automatically With Windows (+ Desktop Shortcut)
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1 -Shortcut
+```
+*(You can also toggle **Start with Windows** anytime by right-clicking RYNA → **Monitor & Settings**, or by saying `"start with windows"`.)*
+To remove auto-start later:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1 -Remove
 ```
 - **Left-Click RYNA**: Greet, listen, display your dictation above her, think, and reply calmly (or interrupt mid-speech).
 - **Right-Click RYNA**: Open the live **Monitor & Settings** panel.

@@ -228,6 +228,22 @@ class TestDesktopPosesAndSchedule(unittest.TestCase):
             finally:
                 core.close()
 
+    def test_autostart_launcher_lifecycle(self) -> None:
+        from app.desktop.autostart import disable_autostart, enable_autostart, find_pythonw, is_autostart_enabled
+
+        with tempfile.TemporaryDirectory() as td:
+            fake_startup = Path(td)
+            self.assertFalse(is_autostart_enabled(fake_startup))
+            vbs = enable_autostart(self.project_root, custom_startup_dir=fake_startup)
+            self.assertTrue(vbs.is_file())
+            self.assertTrue(is_autostart_enabled(fake_startup))
+            txt = vbs.read_text(encoding="utf-8")
+            self.assertIn("ai.orchestration.main", txt)
+            self.assertIn("pythonw", txt.lower())
+            self.assertTrue(disable_autostart(fake_startup))
+            self.assertFalse(is_autostart_enabled(fake_startup))
+            self.assertTrue(find_pythonw().lower().endswith(("pythonw.exe", "python.exe")))
+
 
 if __name__ == "__main__":
     unittest.main()
