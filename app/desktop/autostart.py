@@ -83,7 +83,7 @@ def create_desktop_shortcut(project_root: Path, desktop_dir: Path | None = None)
         f"$s.TargetPath = '{_ps_esc(pyw)}'; "
         "$s.Arguments = '-m ai.orchestration.main'; "
         f"$s.WorkingDirectory = '{_ps_esc(str(project_root.resolve()))}'; "
-        "$s.Description = 'RYNA — Always-On Desktop AI Robot'; "
+        "$s.Description = 'RYNA - Always-On Desktop AI Robot'; "
         + (f"$s.IconLocation = '{_ps_esc(str(icon_path))}'; " if icon_path.is_file() else "")
         + "$s.Save()"
     )

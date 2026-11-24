@@ -1,5 +1,7 @@
-﻿param(
-    [switch]$Foreground
+param(
+    [switch]$Foreground,
+    [switch]$OpenUI,
+    [switch]$Robot
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -25,4 +27,4 @@ if (-not $pyCmd) {
 $env:PYTHONPATH = $Root
 Start-Process -FilePath $pythonw -ArgumentList @("-m", "ai.orchestration.main") -WorkingDirectory $Root -WindowStyle Hidden
 Write-Host "RYNA launched in always-on standalone mode (independent of this terminal)." -ForegroundColor Cyan
-Write-Host "You can safely close this terminal — RYNA will stay active on your desktop." -ForegroundColor Green
+Write-Host "You can safely close this terminal - RYNA will stay active on your desktop." -ForegroundColor Green
