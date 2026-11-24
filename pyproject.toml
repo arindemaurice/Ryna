@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ryna"
+version = "0.1.0"
+description = "RYNA — Unified personal AI assistant, desktop robot companion, voice assistant, and autonomous agent"
+readme = "README.md"
+requires-python = ">=3.11"
+# Core runtime intentionally uses Python standard library so it works reliably offline out of the box.
+dependencies = []
+
+[project.optional-dependencies]
+voice-offline = ["faster-whisper>=1.0", "sounddevice>=0.5", "openwakeword>=0.6", "numpy>=1.26"]
+vision-assets = ["Pillow>=10.4"]
+documents = ["pypdf>=5.0", "python-docx>=1.1", "openpyxl>=3.1"]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

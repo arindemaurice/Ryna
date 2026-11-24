@@ -1,0 +1,16 @@
+RYNA AI Desktop Assistant
+Copyright (c) 2026 Arinde Maurice. All rights reserved.
+
+Ownership & License Notice:
+This software, including its source code, compiled binaries (RYNA.exe, RYNA-Setup.exe),
+configuration, scripts, and custom desktop assistant assets, is the original work and
+intellectual property of Arinde Maurice.
+
+Permission is granted to install and run this software for personal desktop use.
+Redistribution, modification, or commercial resale without explicit written permission
+from Arinde Maurice is prohibited.
+
+Third-Party Components:
+RYNA integrates with optional local/open-source runtimes installed separately or bundled
+under their respective licenses (Python, Ollama, faster-whisper, Pillow, sounddevice,
+numpy, mss, pystray, and Windows System.Speech).
