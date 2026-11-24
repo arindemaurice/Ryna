@@ -32,9 +32,22 @@ class NativeSpeechRecognizer:
     def _get_model(self) -> Any:
         with self._model_lock:
             if self._model is None:
+                from pathlib import Path
                 from faster_whisper import WhisperModel
+                from ai.config import PROJECT_ROOT, RUNTIME_BASE_DIR
 
-                self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+                # Prefer bundled offline faster-whisper model when shipped inside RYNA installer
+                model_source: str = self.model_size
+                for cand in (
+                    PROJECT_ROOT / "models" / f"faster-whisper-{self.model_size}",
+                    RUNTIME_BASE_DIR / "models" / f"faster-whisper-{self.model_size}",
+                    Path(self.model_size),
+                ):
+                    if cand.is_dir() and (cand / "model.bin").is_file():
+                        model_source = str(cand)
+                        break
+
+                self._model = WhisperModel(model_source, device="cpu", compute_type="int8")
             return self._model
 
     def prewarm(self) -> bool:

@@ -77,6 +77,7 @@ class RynaSettingsMonitorWindow:
         tk.Label(hdr, text="RYNA MONITOR & SETTINGS", fg=TEXT_MAIN, bg=BG_ROOT, font=("Segoe UI", 11, "bold")).pack(side="left")
         self._live_pill = tk.Label(hdr, text="● READY", fg=CYAN, bg=BG_CARD, padx=8, pady=2, font=("Segoe UI", 8, "bold"))
         self._live_pill.pack(side="right")
+        tk.Label(container, text="RYNA v1.0.0  ·  Copyright (c) 2026 Arinde Maurice", fg=TEXT_MUTED, bg=BG_ROOT, anchor="w", font=("Segoe UI", 7)).pack(fill="x", pady=(0, 6))
 
         # --- 1. Live System Monitor ---
         mon = self._section(container, "LIVE SYSTEM MONITOR")

@@ -13,14 +13,14 @@ import os
 import signal
 import sys
 
-from ai.config import APP_NAME, PROJECT_ROOT, VERSION, RynaConfig
+from ai.config import APP_NAME, AUTHOR, IS_FROZEN, PROJECT_ROOT, RUNTIME_BASE_DIR, VERSION, RynaConfig
 from ai.orchestration.core import RynaCore
 from app.desktop.robot_window import run_robot_desktop
 from app.desktop.single_instance import SingleInstanceGuard
 
 
 def _ensure_windowless_stdio() -> None:
-    """Under pythonw.exe on Windows, sys.stdout/sys.stderr are None; bind safely to os.devnull."""
+    """Under pythonw.exe / frozen RYNA.exe on Windows, sys.stdout/sys.stderr are None; bind safely to os.devnull."""
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
     if sys.stderr is None:
@@ -30,7 +30,8 @@ def _ensure_windowless_stdio() -> None:
 def main(argv: list[str] | None = None) -> int:
     _ensure_windowless_stdio()
     try:
-        os.chdir(PROJECT_ROOT)
+        RUNTIME_BASE_DIR.mkdir(parents=True, exist_ok=True)
+        os.chdir(RUNTIME_BASE_DIR if IS_FROZEN else PROJECT_ROOT)
     except OSError:
         pass
 

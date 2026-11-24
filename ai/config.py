@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 APP_NAME = "RYNA"
-VERSION = "0.1.0"
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+VERSION = "1.0.0"
+AUTHOR = "Arinde Maurice"
+COPYRIGHT = "Copyright (c) 2026 Arinde Maurice"
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) if IS_FROZEN else Path(__file__).resolve().parents[1]
+RUNTIME_BASE_DIR = (Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "RYNA") if IS_FROZEN else PROJECT_ROOT
 
 RYNA_SYSTEM_PROMPT = (
     "You are RYNA — a friendly, intelligent mini desktop robot assistant living on the user's Windows desktop. "
@@ -81,15 +86,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 def load_dotenv(env_path: Path | None = None) -> None:
-    path = env_path or (PROJECT_ROOT / ".env")
-    if not path.exists():
-        return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    candidates = [env_path] if env_path else [RUNTIME_BASE_DIR / ".env", PROJECT_ROOT / ".env"]
+    for path in candidates:
+        if not path or not path.exists():
             continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
 @dataclass
@@ -98,10 +104,10 @@ class RynaConfig:
     host: str = "127.0.0.1"
     port: int = 8765
     log_level: str = "INFO"
-    data_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "data")
-    db_path: Path = field(default_factory=lambda: PROJECT_ROOT / "data" / "ryna.db")
-    log_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "logs")
-    backup_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "backups")
+    data_dir: Path = field(default_factory=lambda: RUNTIME_BASE_DIR / "data")
+    db_path: Path = field(default_factory=lambda: RUNTIME_BASE_DIR / "data" / "ryna.db")
+    log_dir: Path = field(default_factory=lambda: RUNTIME_BASE_DIR / "logs")
+    backup_dir: Path = field(default_factory=lambda: RUNTIME_BASE_DIR / "backups")
     robot_asset_path: Path = field(default_factory=lambda: PROJECT_ROOT / "app" / "desktop" / "assets" / "ryna_robot.png")
     system_prompt: str = RYNA_SYSTEM_PROMPT
     default_settings: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_SETTINGS))
@@ -128,9 +134,9 @@ class RynaConfig:
             defaults["ai.allow_cloud"] = os.environ["RYNA_ALLOW_CLOUD"].strip().lower() in {"1", "true", "yes", "on"}
 
         data_raw = Path(os.environ.get("RYNA_DATA_DIR", "data"))
-        data_dir = data_raw if data_raw.is_absolute() else (PROJECT_ROOT / data_raw)
+        data_dir = data_raw if data_raw.is_absolute() else (RUNTIME_BASE_DIR / data_raw)
         db_raw = os.environ.get("RYNA_DB_PATH")
-        db_path = (Path(db_raw) if Path(db_raw).is_absolute() else PROJECT_ROOT / db_raw) if db_raw else (data_dir / "ryna.db")
+        db_path = (Path(db_raw) if Path(db_raw).is_absolute() else RUNTIME_BASE_DIR / db_raw) if db_raw else (data_dir / "ryna.db")
 
         cfg = cls(
             host=os.environ.get("RYNA_HOST", "127.0.0.1"),

@@ -55,6 +55,12 @@ powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1 -Remove
 - **Drag RYNA**: Move her anywhere on your desktop.
 - **System Tray Icon**: `Show RYNA`, `Monitor & Settings`, `Exit RYNA`.
 
+## Build Shareable Signed Windows Installer (`.exe`)
+Copyright (c) 2026 **Arinde Maurice**. Build the standalone signed Windows installer (`dist\RYNA-Setup-1.0.0.exe`), which bundles standalone `RYNA.exe`, all pose assets, offline `faster-whisper` `tiny.en` voice recognition, **Ollama** + **`qwen2.5:1.5b`** automatic setup, Desktop shortcut, Windows Auto-Start, and Authenticode code signing (`CN=Arinde Maurice`):
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+```
+
 ## Run Tests
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\test.ps1

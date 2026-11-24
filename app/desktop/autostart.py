@@ -33,6 +33,15 @@ def startup_launcher_path(custom_startup_dir: Path | None = None) -> Path:
 
 
 def _build_vbs(project_root: Path, pythonw_path: str | None = None) -> str:
+    if getattr(sys, "frozen", False):
+        exe = str(Path(sys.executable).resolve()).replace('"', '""')
+        cwd = str(Path(sys.executable).resolve().parent).replace('"', '""')
+        return (
+            "' RYNA Always-On Launcher (Copyright (c) 2026 Arinde Maurice)\r\n"
+            'Set sh = CreateObject("WScript.Shell")\r\n'
+            f'sh.CurrentDirectory = "{cwd}"\r\n'
+            f'sh.Run """{exe}""", 1, False\r\n'
+        )
     pyw = (pythonw_path or find_pythonw()).replace('"', '""')
     root = str(project_root.resolve()).replace('"', '""')
     return (
@@ -71,7 +80,10 @@ def create_desktop_shortcut(project_root: Path, desktop_dir: Path | None = None)
         desktop_dir = (home / "OneDrive" / "Desktop") if (home / "OneDrive" / "Desktop").is_dir() else (home / "Desktop")
     desktop_dir.mkdir(parents=True, exist_ok=True)
     lnk_path = desktop_dir / "RYNA.lnk"
-    pyw = find_pythonw()
+    is_frozen = bool(getattr(sys, "frozen", False))
+    target_path = str(Path(sys.executable).resolve()) if is_frozen else find_pythonw()
+    args_str = "" if is_frozen else "-m ai.orchestration.main"
+    work_dir = str(Path(sys.executable).resolve().parent) if is_frozen else str(project_root.resolve())
     icon_path = project_root / "app" / "desktop" / "assets" / "ryna_icon.ico"
 
     def _ps_esc(s: str) -> str:
@@ -80,10 +92,10 @@ def create_desktop_shortcut(project_root: Path, desktop_dir: Path | None = None)
     script = (
         "$ws = New-Object -ComObject WScript.Shell; "
         f"$s = $ws.CreateShortcut('{_ps_esc(str(lnk_path))}'); "
-        f"$s.TargetPath = '{_ps_esc(pyw)}'; "
-        "$s.Arguments = '-m ai.orchestration.main'; "
-        f"$s.WorkingDirectory = '{_ps_esc(str(project_root.resolve()))}'; "
-        "$s.Description = 'RYNA - Always-On Desktop AI Robot'; "
+        f"$s.TargetPath = '{_ps_esc(target_path)}'; "
+        + (f"$s.Arguments = '{_ps_esc(args_str)}'; " if args_str else "")
+        + f"$s.WorkingDirectory = '{_ps_esc(work_dir)}'; "
+        "$s.Description = 'RYNA - Always-On Desktop AI Robot by Arinde Maurice'; "
         + (f"$s.IconLocation = '{_ps_esc(str(icon_path))}'; " if icon_path.is_file() else "")
         + "$s.Save()"
     )

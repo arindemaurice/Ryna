@@ -1,6 +1,14 @@
 # Secrets & local runtime data
 .env
 .env.local
+# Build & packaging outputs / private signing keys
+dist/
+build/
+*.spec
+certs/*.pfx
+certs/*.p12
+certs/*.key
+certs/*.pem
 data/
 logs/
 backups/
