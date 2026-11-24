@@ -25,6 +25,8 @@ if (-not $pyCmd) {
 }
 
 $env:PYTHONPATH = $Root
-Start-Process -FilePath $pythonw -ArgumentList @("-m", "ai.orchestration.main") -WorkingDirectory $Root -WindowStyle Hidden
+# NOTE: Do NOT pass -WindowStyle Hidden to pythonw.exe! pythonw.exe already has zero console window,
+# and SW_HIDE hides Tkinter's first GUI window (RYNA herself).
+Start-Process -FilePath $pythonw -ArgumentList @("-m", "ai.orchestration.main") -WorkingDirectory $Root
 Write-Host "RYNA launched in always-on standalone mode (independent of this terminal)." -ForegroundColor Cyan
 Write-Host "You can safely close this terminal - RYNA will stay active on your desktop." -ForegroundColor Green

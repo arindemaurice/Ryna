@@ -36,10 +36,10 @@ def _build_vbs(project_root: Path, pythonw_path: str | None = None) -> str:
     pyw = (pythonw_path or find_pythonw()).replace('"', '""')
     root = str(project_root.resolve()).replace('"', '""')
     return (
-        "' RYNA Always-On Windowless Launcher (starts RYNA with zero terminal window)\r\n"
+        "' RYNA Always-On Windowless Launcher (pythonw.exe creates zero console; flag 1 shows RYNA on desktop)\r\n"
         'Set sh = CreateObject("WScript.Shell")\r\n'
         f'sh.CurrentDirectory = "{root}"\r\n'
-        f'sh.Run """{pyw}"" -m ai.orchestration.main", 0, False\r\n'
+        f'sh.Run """{pyw}"" -m ai.orchestration.main", 1, False\r\n'
     )
 
 

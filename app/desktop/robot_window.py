@@ -259,9 +259,14 @@ class RynaRobotDesktop:
             w.bind("<Button-3>", lambda _e: self.open_settings_panel())
         self._position_bubble()
 
-        # --- 3. Minimal Tray Icon (only Show / Exit — all settings are voice-controlled) ---
+        # --- 3. Minimal Tray Icon (Show / Monitor & Settings / Exit) ---
         self._start_tray()
         self.core.warm_up_async()
+        # Explicitly show & raise RYNA on desktop even when launched via pythonw.exe / Startup
+        self.root.deiconify()
+        self.root.lift()
+        self.bubble.deiconify()
+        self.bubble.lift()
         self._tick()
 
     def _initial_greeting(self) -> str:

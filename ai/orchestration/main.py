@@ -52,6 +52,14 @@ def main(argv: list[str] | None = None) -> int:
     core.logger.info("%s %s — Standalone Desktop Robot Active (independent of terminal/server).", APP_NAME, VERSION)
     try:
         run_robot_desktop(core)
+    except Exception:
+        import traceback
+
+        crash_log = PROJECT_ROOT / "logs" / "ryna_crash.log"
+        crash_log.parent.mkdir(parents=True, exist_ok=True)
+        crash_log.write_text(traceback.format_exc(), encoding="utf-8")
+        core.logger.exception("RYNA desktop robot crashed.")
+        raise
     finally:
         core.close()
         guard.release()
