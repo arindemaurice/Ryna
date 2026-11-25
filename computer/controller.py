@@ -152,9 +152,50 @@ if sys.platform == "win32":
             ("BatteryFullLifeTime", wintypes.DWORD),
         ]
 
+    _INPUT_MOUSE = 0
     _INPUT_KEYBOARD = 1
     _KEYEVENTF_KEYUP = 0x0002
     _KEYEVENTF_UNICODE = 0x0004
+    _MOUSEEVENTF_MOVE = 0x0001
+    _MOUSEEVENTF_LEFTDOWN = 0x0002
+    _MOUSEEVENTF_LEFTUP = 0x0004
+    _MOUSEEVENTF_RIGHTDOWN = 0x0008
+    _MOUSEEVENTF_RIGHTUP = 0x0010
+    _MOUSEEVENTF_MIDDLEDOWN = 0x0020
+    _MOUSEEVENTF_MIDDLEUP = 0x0040
+    _MOUSEEVENTF_WHEEL = 0x0800
+    _MOUSEEVENTF_ABSOLUTE = 0x8000
+
+    VK_MAP: dict[str, int] = {
+        "enter": 0x0D, "return": 0x0D,
+        "esc": 0x1B, "escape": 0x1B,
+        "tab": 0x09,
+        "space": 0x20, "spacebar": 0x20,
+        "backspace": 0x08, "back": 0x08,
+        "delete": 0x2E, "del": 0x2E,
+        "insert": 0x2D, "ins": 0x2D,
+        "home": 0x24,
+        "end": 0x23,
+        "pageup": 0x21, "page_up": 0x21, "pgup": 0x21,
+        "pagedown": 0x22, "page_down": 0x22, "pgdn": 0x22,
+        "up": 0x26, "arrowup": 0x26,
+        "down": 0x28, "arrowdown": 0x28,
+        "left": 0x25, "arrowleft": 0x25,
+        "right": 0x27, "arrowright": 0x27,
+        "win": 0x5B, "windows": 0x5B, "lwin": 0x5B, "rwin": 0x5C,
+        "ctrl": 0x11, "control": 0x11, "lctrl": 0xA2, "rctrl": 0xA3,
+        "alt": 0x12, "menu": 0x12, "lalt": 0xA4, "ralt": 0xA5,
+        "shift": 0x10, "lshift": 0xA0, "rshift": 0xA1,
+        "capslock": 0x14, "caps_lock": 0x14,
+        "printscreen": 0x2C, "prtsc": 0x2C,
+        "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73,
+        "f5": 0x74, "f6": 0x75, "f7": 0x76, "f8": 0x77,
+        "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+    }
+    for _ch in "abcdefghijklmnopqrstuvwxyz":
+        VK_MAP[_ch] = ord(_ch.upper())
+    for _num in "0123456789":
+        VK_MAP[_num] = ord(_num)
 
 
 def _win_send_vk(vk: int, key_up: bool = False) -> None:
@@ -555,6 +596,165 @@ class ComputerController:
         self._run_ps(f"Set-Clipboard -Value '{safe}'", timeout=4.0)
         return {"copied": True, "length": len(clean)}
 
+    # --- Complete Windows Input & OS Command Execution ---
+    def get_mouse_position(self) -> dict[str, int]:
+        """Get the current cursor coordinates on screen."""
+        if sys.platform != "win32":
+            return {"x": 0, "y": 0}
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+        pt = POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+        return {"x": int(pt.x), "y": int(pt.y)}
+
+    def mouse_move(self, x: int, y: int) -> dict[str, Any]:
+        """Move the mouse cursor directly to (x, y) coordinates on screen."""
+        if sys.platform != "win32":
+            return {"moved": False, "detail": "Windows required."}
+        if not bool(self.db.get_setting("computer.allow_input_control", True)):
+            raise PermissionError("Input control is disabled in Settings (computer.allow_input_control = false).")
+        ctypes.windll.user32.SetCursorPos(int(x), int(y))
+        return {"moved": True, "x": int(x), "y": int(y)}
+
+    def mouse_click(self, x: int | None = None, y: int | None = None, button: str = "left", clicks: int = 1) -> dict[str, Any]:
+        """Perform a left, right, middle, or double click at (x, y) or current cursor position."""
+        if sys.platform != "win32":
+            return {"clicked": False, "detail": "Windows required."}
+        if not bool(self.db.get_setting("computer.allow_input_control", True)):
+            raise PermissionError("Input control is disabled in Settings (computer.allow_input_control = false).")
+        u32 = ctypes.windll.user32
+        if x is not None and y is not None:
+            u32.SetCursorPos(int(x), int(y))
+            time.sleep(0.02)
+        btn = button.lower().strip()
+        down_flag = _MOUSEEVENTF_RIGHTDOWN if "right" in btn else (_MOUSEEVENTF_MIDDLEDOWN if "middle" in btn else _MOUSEEVENTF_LEFTDOWN)
+        up_flag = _MOUSEEVENTF_RIGHTUP if "right" in btn else (_MOUSEEVENTF_MIDDLEUP if "middle" in btn else _MOUSEEVENTF_LEFTUP)
+        total_clicks = 2 if "double" in btn or clicks == 2 else max(1, clicks)
+        sz = ctypes.sizeof(_INPUT)
+        for c in range(total_clicks):
+            down_inp = _INPUT(type=_INPUT_MOUSE, union=_INPUT_UNION(mi=_MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=down_flag, time=0, dwExtraInfo=0)))
+            up_inp = _INPUT(type=_INPUT_MOUSE, union=_INPUT_UNION(mi=_MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=up_flag, time=0, dwExtraInfo=0)))
+            u32.SendInput(1, ctypes.byref(down_inp), sz)
+            time.sleep(0.02)
+            u32.SendInput(1, ctypes.byref(up_inp), sz)
+            if c < total_clicks - 1:
+                time.sleep(0.06)
+        pos = self.get_mouse_position()
+        return {"clicked": True, "button": btn, "clicks": total_clicks, "x": pos["x"], "y": pos["y"]}
+
+    def mouse_scroll(self, clicks: int = 1) -> dict[str, Any]:
+        """Scroll mouse wheel vertically (positive = up, negative = down)."""
+        if sys.platform != "win32":
+            return {"scrolled": False, "detail": "Windows required."}
+        if not bool(self.db.get_setting("computer.allow_input_control", True)):
+            raise PermissionError("Input control is disabled in Settings (computer.allow_input_control = false).")
+        delta = int(clicks) * 120
+        inp = _INPUT(type=_INPUT_MOUSE, union=_INPUT_UNION(mi=_MOUSEINPUT(dx=0, dy=0, mouseData=delta, dwFlags=_MOUSEEVENTF_WHEEL, time=0, dwExtraInfo=0)))
+        ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
+        return {"scrolled": True, "clicks": clicks}
+
+    def type_text(self, text: str) -> dict[str, Any]:
+        """Type Unicode text directly into the focused window/input."""
+        if sys.platform != "win32":
+            return {"typed": False, "detail": "Windows required."}
+        if not bool(self.db.get_setting("computer.allow_input_control", True)):
+            raise PermissionError("Input control is disabled in Settings (computer.allow_input_control = false).")
+        _win_type_unicode(text)
+        win = self.active_window_title().get("title", "")
+        return {"typed": True, "length": len(text), "target_window": win}
+
+    def press_key(self, key: str) -> dict[str, Any]:
+        """Press and release a keyboard key (enter, esc, tab, space, win, f1-f12, arrows, etc.)."""
+        if sys.platform != "win32":
+            return {"pressed": False, "detail": "Windows required."}
+        if not bool(self.db.get_setting("computer.allow_input_control", True)):
+            raise PermissionError("Input control is disabled in Settings (computer.allow_input_control = false).")
+        k = key.lower().strip()
+        vk = VK_MAP.get(k)
+        if vk is None:
+            raise ValueError(f"Unknown key '{key}'. Supported: enter, esc, tab, space, win, ctrl, alt, shift, f1-f12, arrows, letters.")
+        _win_tap_vk(vk)
+        return {"pressed": True, "key": k}
+
+    def hotkey(self, combo: str | list[str]) -> dict[str, Any]:
+        """Press and release a combination of keys (e.g. 'ctrl+c', 'alt+f4', 'win+d', 'ctrl+shift+esc')."""
+        if sys.platform != "win32":
+            return {"pressed": False, "detail": "Windows required."}
+        if not bool(self.db.get_setting("computer.allow_input_control", True)):
+            raise PermissionError("Input control is disabled in Settings (computer.allow_input_control = false).")
+        if isinstance(combo, str):
+            keys = [k.strip().lower() for k in re.split(r"[\+\s\-]+", combo) if k.strip()]
+        else:
+            keys = [str(k).strip().lower() for k in combo if str(k).strip()]
+        vks = []
+        for k in keys:
+            vk = VK_MAP.get(k)
+            if vk is None:
+                raise ValueError(f"Unknown key '{k}' in hotkey '{combo}'.")
+            vks.append(vk)
+        for vk in vks:
+            _win_send_vk(vk, key_up=False)
+            time.sleep(0.01)
+        time.sleep(0.03)
+        for vk in reversed(vks):
+            _win_send_vk(vk, key_up=True)
+            time.sleep(0.01)
+        return {"hotkey": "+".join(keys), "success": True}
+
+    def execute_command(self, command: str, cwd: str | None = None, timeout: float = 30.0) -> dict[str, Any]:
+        """Execute arbitrary PowerShell command on Windows with complete system access."""
+        clean = str(command or "").strip()
+        if not clean:
+            raise ValueError("Missing command to execute.")
+        if sys.platform != "win32":
+            raise RuntimeError("Windows command execution requires Windows.")
+        t0 = time.perf_counter()
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        work_dir = cwd if cwd and os.path.isdir(cwd) else None
+        proc = subprocess.run(
+            ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", clean],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=work_dir,
+            creationflags=creation_flags,
+        )
+        duration_ms = int((time.perf_counter() - t0) * 1000)
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        combined = out if not err else (f"{out}\n{err}".strip() if out else err)
+        return {
+            "success": proc.returncode == 0,
+            "returncode": proc.returncode,
+            "output": combined,
+            "stdout": out,
+            "stderr": err,
+            "duration_ms": duration_ms,
+            "command": clean,
+        }
+
+    def list_processes(self, limit: int = 25) -> dict[str, Any]:
+        """List running applications and processes on the system with memory usage."""
+        if sys.platform != "win32":
+            return {"processes": [], "count": 0}
+        script = (
+            f"Get-Process | Where-Object {{ $_.MainWindowHandle -ne 0 -or $_.WorkingSet64 -gt 50MB }} "
+            f"| Sort-Object WorkingSet64 -Descending | Select-Object -First {limit} "
+            f"| ForEach-Object {{ \"$($_.Id)`t$($_.ProcessName)`t$([math]::Round($_.WorkingSet64/1MB,1))`t$($_.MainWindowTitle)\" }}"
+        )
+        raw = self._run_ps(script, timeout=8.0)
+        procs: list[dict[str, Any]] = []
+        for line in raw.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                procs.append({
+                    "pid": int(parts[0]),
+                    "name": parts[1],
+                    "memory_mb": float(parts[2]),
+                    "title": parts[3] if len(parts) > 3 else "",
+                })
+        return {"processes": procs, "count": len(procs)}
+
     def capabilities(self) -> dict[str, Any]:
         return {
             "platform": sys.platform,
@@ -565,6 +765,10 @@ class ComputerController:
             "settings_pages": sorted(WINDOWS_SETTINGS_PAGES),
             "screen_vision_enabled": bool(self.db.get_setting("computer.allow_screen_vision", True)),
             "screen_capture_installed": importlib.util.find_spec("mss") is not None and importlib.util.find_spec("PIL") is not None,
-            "input_control_enabled": bool(self.db.get_setting("computer.allow_input_control", False)),
-            "detail": "Real Windows StartApps discovery, fast physical Search-bar launching, polite app close, volume/brightness/battery/shortcuts/settings, and mss screen vision active.",
+            "input_control_enabled": bool(self.db.get_setting("computer.allow_input_control", True)),
+            "command_execution_enabled": True,
+            "mouse_control_enabled": True,
+            "keyboard_control_enabled": True,
+            "full_device_access": bool(self.db.get_setting("computer.allow_full_device_access", True)),
+            "detail": "Complete Windows device access active: PowerShell commands, StartApps, physical Search launch, mouse/keyboard input, volume/brightness/battery, and mss screen vision.",
         }

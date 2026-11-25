@@ -72,8 +72,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "computer.allowed_root": ".",
     "computer.allow_app_launch": True,
     "computer.allow_screen_vision": True,
-    "computer.allow_input_control": False,
+    "computer.allow_input_control": True,
+    "computer.allow_full_device_access": True,
     # Permissions & Agent
+    "permissions.full_device_access": True,
     "permissions.level1_auto": True,
     "permissions.level2_require_confirm": True,
     "permissions.level3_block_destructive": True,

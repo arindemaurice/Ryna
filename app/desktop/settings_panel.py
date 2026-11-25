@@ -45,7 +45,7 @@ class RynaSettingsMonitorWindow:
         self.win.protocol("WM_DELETE_WINDOW", self.close)
 
         # Position cleanly near RYNA without going off-screen
-        pw, ph = 475, 685
+        pw, ph = 495, 845
         sx = int(max(20, min(robot.sw - pw - 20, robot.pos_x - pw - 16 if robot.pos_x > pw + 40 else robot.pos_x + robot.win_w + 16)))
         sy = int(max(20, min(robot.sh - ph - 60, robot.pos_y + robot.win_h - ph)))
         self.win.geometry(f"{pw}x{ph}+{sx}+{sy}")
@@ -195,7 +195,96 @@ class RynaSettingsMonitorWindow:
             )
             cb.grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 8), pady=1)
 
-        # --- 4. Size, Speed, Voice & Model ---
+        # --- 4. Avatar & Appearance Customizer ---
+        avatar_box = self._section(container, "AVATAR & APPEARANCE CUSTOMIZER")
+
+        # Color Theme Presets
+        theme_row = tk.Frame(avatar_box, bg=BG_CARD)
+        theme_row.pack(fill="x", pady=(0, 3))
+        tk.Label(theme_row, text="Color Theme", fg=TEXT_MUTED, bg=BG_CARD, width=13, anchor="w", font=("Segoe UI", 8)).pack(side="left")
+        btn_bar = tk.Frame(theme_row, bg=BG_CARD)
+        btn_bar.pack(side="left", fill="x", expand=True)
+        themes = [
+            ("Original", "original", 0),
+            ("Cyan", "#00e5ff", 180),
+            ("Blue", "#2979ff", 220),
+            ("Green", "#00e676", 140),
+            ("Gold", "#ffab00", 40),
+            ("Red", "#ff1744", 0),
+            ("Violet", "#d500f9", 280),
+            ("Pink", "#ff4081", 330),
+        ]
+        self._theme_buttons: dict[str, tk.Button] = {}
+        cur_accent = self.robot.accent_color.lower()
+        for name, col, hue in themes:
+            is_active = (col.lower() == cur_accent or (col == "original" and cur_accent in ("original", "default")))
+            btn_fg = "#04101f" if is_active else (TEXT_MAIN if col == "original" else col)
+            btn_bg = "#94a3b8" if (is_active and col == "original") else (col if is_active else BG_INPUT)
+            btn = tk.Button(
+                btn_bar,
+                text=name,
+                command=lambda h=hue, c=col: self._apply_color_theme(h, c),
+                bg=btn_bg,
+                fg=btn_fg,
+                activebackground="#94a3b8" if col == "original" else col,
+                activeforeground="#04101f",
+                relief="solid" if is_active else "flat",
+                bd=1 if is_active else 0,
+                padx=2,
+                pady=2,
+                font=("Segoe UI", 7, "bold"),
+                cursor="hand2",
+            )
+            btn.pack(side="left", expand=True, fill="x", padx=1)
+            self._theme_buttons[col.lower()] = btn
+
+        # Body Hue Shift Slider
+        hue_row = tk.Frame(avatar_box, bg=BG_CARD)
+        hue_row.pack(fill="x", pady=1)
+        tk.Label(hue_row, text="Chassis Hue", fg=TEXT_MUTED, bg=BG_CARD, width=13, anchor="w", font=("Segoe UI", 8)).pack(side="left")
+        self._hue_lbl = tk.Label(hue_row, text=f"{self.robot.chassis_hue_shift}°", fg=CYAN_SOFT, bg=BG_CARD, width=6, anchor="e", font=("Segoe UI", 8, "bold"))
+        self._hue_lbl.pack(side="right")
+        self._hue_scale = tk.Scale(
+            hue_row, from_=0, to=359, orient="horizontal", showvalue=False, bg=BG_CARD, troughcolor=BG_INPUT,
+            highlightthickness=0, activebackground=CYAN, command=self._on_hue_change,
+        )
+        self._hue_scale.set(self.robot.chassis_hue_shift)
+        self._hue_scale.pack(side="left", fill="x", expand=True, padx=4)
+
+        # Face & Structure Customization Folder
+        asset_row = tk.Frame(avatar_box, bg=BG_CARD)
+        asset_row.pack(fill="x", pady=(3, 1))
+        tk.Label(asset_row, text="Face / Structure", fg=TEXT_MUTED, bg=BG_CARD, width=13, anchor="w", font=("Segoe UI", 8)).pack(side="left")
+        tk.Button(
+            asset_row,
+            text="📁 Open Avatar Folder",
+            command=self._open_avatar_folder,
+            bg=BG_INPUT,
+            fg=CYAN_SOFT,
+            activebackground=CYAN,
+            activeforeground="#04101f",
+            relief="flat",
+            padx=6,
+            pady=3,
+            font=("Segoe UI", 7, "bold"),
+            cursor="hand2",
+        ).pack(side="left", padx=(0, 4))
+        tk.Button(
+            asset_row,
+            text="🔄 Reload Sprites",
+            command=self._reload_avatar_sprites,
+            bg=BG_INPUT,
+            fg=GREEN,
+            activebackground=GREEN,
+            activeforeground="#04101f",
+            relief="flat",
+            padx=6,
+            pady=3,
+            font=("Segoe UI", 7, "bold"),
+            cursor="hand2",
+        ).pack(side="left")
+
+        # --- 5. Size, Speed, Voice & Model ---
         tune = self._section(container, "ROBOT SIZE, VOICE & LOCAL MODEL")
 
         # Robot size slider
@@ -248,7 +337,58 @@ class RynaSettingsMonitorWindow:
         m_cb.pack(side="left", fill="x", expand=True)
         m_cb.bind("<<ComboboxSelected>>", self._on_model_change)
 
-        # --- 5. Recent Real Activity Monitor ---
+        # --- 5. Windows Device Access & OS Control ---
+        dev_box = self._section(container, "WINDOWS DEVICE ACCESS & OS CONTROL")
+        dev_hdr = tk.Frame(dev_box, bg=BG_CARD)
+        dev_hdr.pack(fill="x", pady=(0, 3))
+        self._dev_status_lbl = tk.Label(dev_hdr, text="● FULL OS ACCESS ACTIVE", fg=GREEN, bg=BG_CARD, font=("Segoe UI", 8, "bold"))
+        self._dev_status_lbl.pack(side="left")
+
+        badge_row = tk.Frame(dev_box, bg=BG_CARD)
+        badge_row.pack(fill="x", pady=(0, 3))
+        for cap_lbl in ("PowerShell", "Mouse & Keys", "Filesystem", "App Launch"):
+            tk.Label(badge_row, text=f"✓ {cap_lbl}", fg=CYAN_SOFT, bg=BG_INPUT, padx=5, pady=1, font=("Segoe UI", 7, "bold")).pack(side="left", padx=2)
+
+        dev_action_row = tk.Frame(dev_box, bg=BG_CARD)
+        dev_action_row.pack(fill="x", pady=(2, 0))
+        tk.Button(
+            dev_action_row,
+            text="⚡ Test OS Access",
+            command=self._test_os_access,
+            bg=BG_INPUT,
+            fg=CYAN,
+            activebackground=CYAN,
+            activeforeground="#04101f",
+            relief="flat",
+            padx=6,
+            pady=2,
+            font=("Segoe UI", 7, "bold"),
+            cursor="hand2",
+        ).pack(side="left", padx=(0, 4))
+        self._dev_test_result = tk.Label(dev_action_row, text="Ollama & RYNA have complete device control.", fg=TEXT_MUTED, bg=BG_CARD, font=("Segoe UI", 7))
+        self._dev_test_result.pack(side="left", fill="x", expand=True)
+
+        phone_row = tk.Frame(dev_box, bg=BG_CARD)
+        phone_row.pack(fill="x", pady=(4, 0))
+        bridge = getattr(self.robot, "_phone_bridge", None)
+        phone_url = bridge.url if bridge is not None else "http://127.0.0.1:8765"
+        tk.Label(phone_row, text=f"📱 Phone URL: {phone_url}", fg=CYAN_SOFT, bg=BG_CARD, font=("Segoe UI", 7, "bold"), anchor="w").pack(side="left")
+        tk.Button(
+            phone_row,
+            text="📋 Copy Phone Link",
+            command=lambda u=phone_url: self._copy_phone_url(u),
+            bg=BG_INPUT,
+            fg=GREEN,
+            activebackground=GREEN,
+            activeforeground="#04101f",
+            relief="flat",
+            padx=6,
+            pady=1,
+            font=("Segoe UI", 7, "bold"),
+            cursor="hand2",
+        ).pack(side="right")
+
+        # --- 6. Recent Real Activity Monitor ---
         log_box = self._section(container, "RECENT ACTIVITY LOG")
         self._activity_text = tk.Text(
             log_box,
@@ -287,6 +427,24 @@ class RynaSettingsMonitorWindow:
                 font=("Segoe UI", 8, "bold"),
                 cursor="hand2",
             ).pack(side="left", expand=True, fill="x", padx=2)
+
+    def _copy_phone_url(self, url: str) -> None:
+        try:
+            self.win.clipboard_clear()
+            self.win.clipboard_append(url)
+            self._dev_test_result.config(text=f"✓ Copied {url} — open on your phone over same Wi-Fi!", fg=GREEN)
+        except Exception as exc:
+            self._dev_test_result.config(text=f"Copy failed: {exc}", fg=RED)
+
+    def _test_os_access(self) -> None:
+        try:
+            res = self.core.computer.execute_command("Write-Output 'Device Access OK'")
+            if res.get("success"):
+                self._dev_test_result.config(text="✓ Verified: PowerShell & OS access active!", fg=GREEN)
+            else:
+                self._dev_test_result.config(text=f"Error: {res.get('stderr')}", fg=RED)
+        except Exception as exc:
+            self._dev_test_result.config(text=f"Failed: {exc}", fg=RED)
 
     def _detect_local_models(self) -> list[str]:
         try:
@@ -348,6 +506,57 @@ class RynaSettingsMonitorWindow:
         except Exception as exc:
             self._var_startup.set(not val)
             self.robot._show_bubble(f"Auto-start update failed: {exc}", dictation_text="", duration=5.5)
+
+    def _apply_color_theme(self, hue: int, col: str) -> None:
+        self.robot.reload_avatar(hue_shift=hue, accent_color=col, save=True)
+        if hasattr(self, "_hue_scale"):
+            self._hue_scale.set(hue)
+        if hasattr(self, "_hue_lbl"):
+            self._hue_lbl.config(text=f"{hue}°")
+        pill_col = CYAN if col == "original" else col
+        if hasattr(self, "_live_pill"):
+            self._live_pill.config(fg=pill_col)
+        if hasattr(self, "_theme_buttons"):
+            for btn_col, btn in self._theme_buttons.items():
+                if btn_col == col.lower():
+                    b_bg = "#94a3b8" if col == "original" else col
+                    btn.config(bg=b_bg, fg="#04101f", relief="solid", bd=1)
+                else:
+                    b_fg = TEXT_MAIN if btn_col == "original" else btn_col
+                    btn.config(bg=BG_INPUT, fg=b_fg, relief="flat", bd=0)
+        try:
+            self.win.update_idletasks()
+            self.robot.root.update_idletasks()
+        except Exception:
+            pass
+
+    def _on_hue_change(self, val: str) -> None:
+        import colorsys
+
+        hue = int(float(val)) % 360
+        if hasattr(self, "_hue_lbl"):
+            self._hue_lbl.config(text=f"{hue}°")
+        rgb_f = colorsys.hsv_to_rgb(hue / 360.0, 0.95, 1.0)
+        hex_col = "#{:02x}{:02x}{:02x}".format(int(rgb_f[0] * 255), int(rgb_f[1] * 255), int(rgb_f[2] * 255))
+        self.robot.reload_avatar(hue_shift=hue, accent_color=hex_col, save=True)
+        if hasattr(self, "_live_pill"):
+            self._live_pill.config(fg=hex_col)
+        try:
+            self.win.update_idletasks()
+            self.robot.root.update_idletasks()
+        except Exception:
+            pass
+
+    def _open_avatar_folder(self) -> None:
+        import os
+        try:
+            os.startfile(str(self.robot.assets_dir))
+        except Exception as e:
+            self.robot._show_bubble(f"Cannot open folder: {e}", dictation_text="", show_mic_bar=False, duration=5.0)
+
+    def _reload_avatar_sprites(self) -> None:
+        self.robot.reload_avatar(force_disk_reload=True)
+        self.robot._show_bubble("Reloaded custom avatar sprites!", dictation_text="", show_mic_bar=False, duration=4.0)
 
     def _on_size_change(self, val: str) -> None:
         px = int(float(val))

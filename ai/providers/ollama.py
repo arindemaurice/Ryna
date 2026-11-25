@@ -103,9 +103,9 @@ class OllamaProvider(AIProvider):
             "stream": stream,
             "keep_alive": "30m",
             "options": {
-                "num_ctx": 2048,
-                "num_predict": 180,
-                "temperature": 0.6,
+                "num_ctx": 4096,
+                "num_predict": 260,
+                "temperature": 0.5,
             },
         }
         # Disable slow hidden chain-of-thought on thinking models like qwen3.5 for snappy spoken dialogue
@@ -172,7 +172,11 @@ class OllamaProvider(AIProvider):
 
         full = "".join(chunks).strip()
         if not full:
-            raise ProviderError(self.name, "Ollama stream ended with empty output.")
+            # Fallback to single non-streaming turn if streaming returned empty tokens
+            fallback = self.chat(messages, model=target, timeout=min(timeout, 60.0))
+            yield {"delta": fallback.content, "provider": self.name, "model": fallback.model}
+            yield {"done": True, "response": fallback}
+            return
         yield {
             "done": True,
             "response": AIResponse(full, self.name, actual_model, True, int((time.perf_counter() - t0) * 1000), usage),

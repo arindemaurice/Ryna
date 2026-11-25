@@ -50,6 +50,17 @@ ACTION_LEVELS: dict[str, PermissionLevel] = {
     "type_active_app": PermissionLevel.AUTOMATIC,
     "power_control": PermissionLevel.AUTOMATIC,
     "user_file_recycle": PermissionLevel.AUTOMATIC,
+    "execute_command": PermissionLevel.AUTOMATIC,
+    "run_command": PermissionLevel.AUTOMATIC,
+    "run_powershell": PermissionLevel.AUTOMATIC,
+    "mouse_click": PermissionLevel.AUTOMATIC,
+    "mouse_move": PermissionLevel.AUTOMATIC,
+    "mouse_scroll": PermissionLevel.AUTOMATIC,
+    "type_text": PermissionLevel.AUTOMATIC,
+    "press_key": PermissionLevel.AUTOMATIC,
+    "hotkey": PermissionLevel.AUTOMATIC,
+    "list_processes": PermissionLevel.AUTOMATIC,
+    "create_file": PermissionLevel.AUTOMATIC,
     "file_write": PermissionLevel.CONFIRMATION_REQUIRED,
     "send_email": PermissionLevel.CONFIRMATION_REQUIRED,
     "send_message": PermissionLevel.CONFIRMATION_REQUIRED,
@@ -96,6 +107,13 @@ class PermissionEngine:
     def level_for_action(self, action_type: str, override_level: int | None = None) -> PermissionLevel:
         if override_level is not None:
             return PermissionLevel(max(1, min(3, int(override_level))))
+        full_access = bool(self.db.get_setting("permissions.full_device_access", True))
+        if full_access and action_type in (
+            "shell_command", "execute_command", "run_command", "run_powershell",
+            "file_write", "create_file", "delete_file", "mouse_click", "mouse_move",
+            "mouse_scroll", "type_text", "press_key", "hotkey", "list_processes",
+        ):
+            return PermissionLevel.AUTOMATIC
         return ACTION_LEVELS.get(action_type, PermissionLevel.CONFIRMATION_REQUIRED)
 
     def evaluate(

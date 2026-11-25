@@ -65,6 +65,8 @@ class ToolRegistry:
             "file_search": self._file_search,
             "file_read": self._file_read,
             "file_write": self._file_write,
+            "create_file": self._file_write,
+            "delete_file": self._delete_file,
             "create_note": self._create_note,
             "system_diagnostics": self._diagnostics,
             "system_info": self._system_info,
@@ -92,6 +94,17 @@ class ToolRegistry:
             "power_control": self._power_control,
             "clipboard_get": self._clipboard_get,
             "clipboard_set": self._clipboard_set,
+            "execute_command": self._execute_command,
+            "run_command": self._execute_command,
+            "run_powershell": self._execute_command,
+            "shell_command": self._execute_command,
+            "mouse_click": self._mouse_click,
+            "mouse_move": self._mouse_move,
+            "mouse_scroll": self._mouse_scroll,
+            "type_text": self._type_text,
+            "press_key": self._press_key,
+            "hotkey": self._hotkey,
+            "list_processes": self._list_processes,
             "web_fetch": self._web_fetch,
             "web_search": self._web_search,
         }
@@ -128,8 +141,28 @@ class ToolRegistry:
         return raw.resolve() if raw.is_absolute() else (self.config.project_root / raw).resolve()
 
     def _safe_path(self, rel_or_abs: str) -> Path:
-        root = self._allowed_root()
         p = Path(rel_or_abs)
+        # Block directory traversal attempts (e.g. '../../Windows/win.ini')
+        if any(part == ".." for part in p.parts):
+            root = self._allowed_root()
+            target = (root / p).resolve()
+            if root != target and root not in target.parents:
+                raise PermissionError(f"Directory traversal outside allowed root: '{rel_or_abs}'.")
+            return target
+
+        full_access = bool(self.db.get_setting("computer.allow_full_device_access", True))
+        if full_access:
+            if p.is_absolute():
+                return p.resolve()
+            for parent_cand in (Path.home() / "Desktop", Path.home(), self.config.project_root):
+                cand = (parent_cand / p).resolve()
+                if cand.exists():
+                    return cand
+            if len(p.parts) <= 1:
+                return (Path.home() / "Desktop" / p).resolve()
+            return (self.config.project_root / p).resolve()
+
+        root = self._allowed_root()
         target = p.resolve() if p.is_absolute() else (root / p).resolve()
         if root != target and root not in target.parents:
             raise PermissionError(f"Path '{rel_or_abs}' is outside allowed root '{root}'.")
@@ -335,3 +368,55 @@ class ToolRegistry:
         cleaned = html.unescape(re.sub(r"<[^>]+>", " ", cleaned))
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return {"url": url, "isolated_content": wrap_untrusted_web_content(url, cleaned)}
+
+    def _execute_command(self, args: dict[str, Any]) -> dict[str, Any]:
+        cmd = str(args.get("command", "") or args.get("cmd", "") or args.get("script", "")).strip()
+        cwd = args.get("cwd")
+        timeout = float(args.get("timeout", 30.0))
+        return self.computer.execute_command(cmd, cwd=cwd, timeout=timeout)
+
+    def _mouse_click(self, args: dict[str, Any]) -> dict[str, Any]:
+        x = args.get("x")
+        y = args.get("y")
+        btn = str(args.get("button", "left"))
+        clicks = int(args.get("clicks", 1))
+        return self.computer.mouse_click(x=x, y=y, button=btn, clicks=clicks)
+
+    def _mouse_move(self, args: dict[str, Any]) -> dict[str, Any]:
+        x = int(args.get("x", 0))
+        y = int(args.get("y", 0))
+        return self.computer.mouse_move(x=x, y=y)
+
+    def _mouse_scroll(self, args: dict[str, Any]) -> dict[str, Any]:
+        clicks = int(args.get("clicks", 1))
+        return self.computer.mouse_scroll(clicks=clicks)
+
+    def _type_text(self, args: dict[str, Any]) -> dict[str, Any]:
+        text = str(args.get("text", ""))
+        return self.computer.type_text(text)
+
+    def _press_key(self, args: dict[str, Any]) -> dict[str, Any]:
+        key = str(args.get("key", ""))
+        return self.computer.press_key(key)
+
+    def _hotkey(self, args: dict[str, Any]) -> dict[str, Any]:
+        combo = args.get("combo") or args.get("keys") or args.get("hotkey") or ""
+        return self.computer.hotkey(combo)
+
+    def _list_processes(self, args: dict[str, Any]) -> dict[str, Any]:
+        limit = int(args.get("limit", 25))
+        return self.computer.list_processes(limit=limit)
+
+    def _delete_file(self, args: dict[str, Any]) -> dict[str, Any]:
+        import shutil
+        path_arg = str(args.get("path", "")).strip()
+        if not path_arg:
+            raise ValueError("Missing path.")
+        target = self._safe_path(path_arg)
+        if not target.exists():
+            raise FileNotFoundError(f"File not found: {target}")
+        if target.is_dir():
+            shutil.rmtree(target)
+            return {"deleted": True, "path": str(target), "type": "directory"}
+        target.unlink()
+        return {"deleted": True, "path": str(target), "type": "file"}

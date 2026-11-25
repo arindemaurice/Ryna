@@ -129,6 +129,20 @@ class TestDesktopPosesAndSchedule(unittest.TestCase):
                 panel._var_phys_search.set(False)
                 core.db.set_setting("desktop.physical_app_search", False)
                 self.assertFalse(bool(core.db.get_setting("desktop.physical_app_search", True)))
+
+                # Verify avatar customization: theme buttons, hue shifts, and voice color commands
+                panel._apply_color_theme(40, "#ffab00")
+                self.assertEqual(app.chassis_hue_shift, 40)
+                self.assertEqual(app.accent_color, "#ffab00")
+                self.assertEqual(core.db.get_setting("desktop.chassis_hue_shift"), 40)
+                self.assertEqual(core.db.get_setting("desktop.accent_color"), "#ffab00")
+
+                res_voice = app._try_voice_setting("change color to blue")
+                self.assertIsNotNone(res_voice)
+                self.assertIn("blue", str(res_voice).lower())
+                self.assertEqual(app.chassis_hue_shift, 220)
+                self.assertEqual(app.accent_color, "#2979ff")
+
                 panel.close()
 
                 # Verify physical app launcher hook routes "open word" cleanly
@@ -243,6 +257,38 @@ class TestDesktopPosesAndSchedule(unittest.TestCase):
             self.assertTrue(disable_autostart(fake_startup))
             self.assertFalse(is_autostart_enabled(fake_startup))
             self.assertTrue(find_pythonw().lower().endswith(("pythonw.exe", "python.exe")))
+
+    def test_no_tick_timer_leak_original_theme_and_phone_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cfg = RynaConfig.load(
+                overrides={
+                    "project_root": self.project_root,
+                    "data_dir": base,
+                    "db_path": base / "ryna.db",
+                    "log_dir": base / "logs",
+                    "backup_dir": base / "backups",
+                }
+            )
+            core = RynaCore(cfg)
+            # Pre-seed 'original' accent color to ensure Tk never throws TclError on startup
+            core.db.set_setting("desktop.accent_color", "original")
+            app = None
+            try:
+                app = RynaRobotDesktop(core)
+                for _ in range(25):
+                    app._tick()
+                    app._redraw_now()
+                after_ids = app.root.tk.call("after", "info")
+                self.assertLessEqual(len(after_ids), 3, f"Timer leak detected: {len(after_ids)} pending callbacks!")
+
+                if app._phone_bridge is not None:
+                    png = app._phone_bridge.render_avatar_png()
+                    self.assertTrue(png.startswith(b"\x89PNG"))
+            finally:
+                if app is not None:
+                    app.quit_app()
+                core.close()
 
 
 if __name__ == "__main__":

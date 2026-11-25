@@ -235,7 +235,20 @@ class RynaCore:
         if mems:
             sys_prompt += "\n\nRelevant persistent memories:\n" + "\n".join(f"- [{m['category']}/{m['memory_type']}] {m['content']}" for m in mems)
 
-        hist = self.db.list_messages(conversation_id, limit=24)
+        # Inject concise Windows Device Access & Control schema (optimized for fast local Ollama models)
+        sys_prompt += (
+            "\n\n[Windows Device Control]\n"
+            "You have full access to control this Windows PC. For normal questions/chat, answer naturally in 1-2 sentences with NO action tag.\n"
+            "ONLY when the user asks you to perform a computer action, emit ONE action line:\n"
+            "[ACTION: tool_name({\"arg\": \"val\"})]\n"
+            "Tools: execute_command(command), open_application(app), close_application(app), "
+            "file_write(path, content), file_read(path), file_search(query), delete_file(path), "
+            "type_text(text), press_key(key), hotkey(combo), mouse_click(x, y, button), mouse_move(x, y), "
+            "screen_capture(), active_window(), volume_control(action, level), brightness_control(mode, value), "
+            "battery_status(), system_info(), list_processes(), web_search(query)."
+        )
+
+        hist = self.db.list_messages(conversation_id, limit=10)
         msgs = [ChatMessage("system", sys_prompt)]
         for i, m in enumerate(hist):
             if m["role"] not in ("user", "assistant"):
@@ -603,7 +616,160 @@ class RynaCore:
             finally:
                 self.set_robot_state("idle")
 
+        # 16. Direct PowerShell / Terminal command execution ("run command ...", "powershell ...", "terminal ...")
+        m_cmd = re.match(r"^(?:run\s+(?:command|powershell|cmd|script)|execute|powershell|cmd|terminal)\s+(.+)$", stripped, re.IGNORECASE)
+        if m_cmd:
+            cmd_to_run = m_cmd.group(1).strip()
+            return _exec_action(
+                "execute_command", {"command": cmd_to_run}, cmd_to_run,
+                lambda r: f"Command executed:\n```\n{str(r.get('output', 'Success')).strip()[:1800]}\n```" if r.get("output") else "Command executed successfully.",
+                "PowerShell Command",
+            )
+
+        # 17. Direct keyboard hotkeys and key presses ("press enter", "press alt f4", "press ctrl c")
+        m_press = re.match(r"^(?:press|hit)\s+(?:key\s+|keys\s+)?([a-z0-9\+\- ]+)$", stripped, re.IGNORECASE)
+        if m_press:
+            key_expr = m_press.group(1).strip().lower()
+            if any(k in key_expr for k in ("+", "ctrl", "alt", "win", "shift")):
+                return _exec_action("hotkey", {"combo": key_expr}, key_expr, lambda r: f"Pressed hotkey {r.get('hotkey', key_expr)}.", "Hotkey")
+            return _exec_action("press_key", {"key": key_expr}, key_expr, lambda r: f"Pressed {r.get('key', key_expr)}.", "Keyboard")
+
+        # 18. Direct mouse click and move ("click at 500, 400", "move mouse to 100, 200", "double click")
+        m_click_xy = re.match(r"^(?:mouse\s+)?click(?:\s+at)?\s+(\d+)\s*,\s*(\d+)$", stripped, re.IGNORECASE)
+        if m_click_xy:
+            cx, cy = int(m_click_xy.group(1)), int(m_click_xy.group(2))
+            return _exec_action("mouse_click", {"x": cx, "y": cy}, f"({cx}, {cy})", lambda r: f"Clicked at ({r['x']}, {r['y']}).", "Mouse Click")
+        m_move_xy = re.match(r"^(?:move\s+mouse\s+to|cursor\s+to)\s+(\d+)\s*,\s*(\d+)$", stripped, re.IGNORECASE)
+        if m_move_xy:
+            mx, my = int(m_move_xy.group(1)), int(m_move_xy.group(2))
+            return _exec_action("mouse_move", {"x": mx, "y": my}, f"({mx}, {my})", lambda r: f"Moved cursor to ({r['x']}, {r['y']}).", "Mouse Move")
+        if re.match(r"^(?:double\s+click|right\s+click|left\s+click)$", low):
+            b_type = "double" if "double" in low else ("right" if "right" in low else "left")
+            return _exec_action("mouse_click", {"button": b_type}, b_type, lambda r: f"Performed {b_type} click.", "Mouse Click")
+
+        # 19. Direct file creation ("create file hello.txt with content world")
+        m_fcreate = re.match(r"^(?:create|make|write)\s+(?:a\s+)?(?:new\s+)?file\s+(?:named\s+|called\s+|at\s+)?([^\s]+)\s+with\s+content\s+(.+)$", stripped, re.IGNORECASE)
+        if m_fcreate:
+            f_path, f_content = m_fcreate.group(1).strip(), m_fcreate.group(2).strip()
+            return _exec_action("file_write", {"path": f_path, "content": f_content}, f_path, lambda r: f"Created file {Path(r.get('path', f_path)).name} successfully.", "Create File")
+
+        # 20. Running processes ("list running processes", "what processes are running")
+        if re.match(r"^(?:list|show|what are)(?: the)?(?: running)? (?:processes|tasks|programs|running apps)$", low):
+            return _exec_action(
+                "list_processes", {"limit": 10}, "processes",
+                lambda r: f"Running processes include: " + ", ".join(f"{p['name']} ({p['memory_mb']}MB)" for p in r.get("processes", [])[:7]) + ".",
+                "Running Processes",
+            )
+
         return None
+
+    def _execute_ai_device_actions(self, content: str, conv_id: str, mode: str) -> tuple[str, list[dict[str, Any]]]:
+        """Detect and execute Windows device actions invoked by Ollama or Cloud AI models."""
+        executed_actions: list[dict[str, Any]] = []
+        text = content
+
+        action_pattern = re.compile(r"\[ACTION:\s*([a-zA-Z0-9_-]+)\s*\(([\s\S]*?)\)\]", re.IGNORECASE)
+        json_pattern = re.compile(r"```(?:json)?\s*\{\s*\"action\"\s*:\s*\"([a-zA-Z0-9_-]+)\"\s*,\s*\"args\"\s*:\s*(\{[\s\S]*?\})\s*\}\s*```", re.IGNORECASE)
+
+        matches = list(action_pattern.finditer(text))
+        if not matches:
+            matches = list(json_pattern.finditer(text))
+
+        if not matches:
+            return text, executed_actions
+
+        self.set_robot_state("working")
+        try:
+            for m in matches:
+                full_tag = m.group(0)
+                tool_name = m.group(1).strip()
+                raw_args = m.group(2).strip()
+                args: dict[str, Any] = {}
+                if raw_args:
+                    try:
+                        args = json.loads(raw_args)
+                    except Exception:
+                        try:
+                            import ast
+                            args = ast.literal_eval(raw_args)
+                        except Exception:
+                            if tool_name in ("execute_command", "run_command", "run_powershell", "shell_command"):
+                                args = {"command": raw_args.strip("\"'")}
+                            elif tool_name in ("open_application", "close_application"):
+                                args = {"app": raw_args.strip("\"'")}
+                            elif tool_name in ("file_read", "file_search"):
+                                args = {"path": raw_args.strip("\"'")}
+                            else:
+                                args = {"param": raw_args.strip("\"'")}
+
+                if not isinstance(args, dict):
+                    args = {"input": args}
+
+                target_desc = str(args.get("command") or args.get("app") or args.get("path") or args.get("text") or tool_name)
+                dec = self.permissions.evaluate(tool_name, target_desc)
+                if not dec.allowed:
+                    block_msg = f"\n[Action `{tool_name}` blocked by permission policy: {dec.reason}]"
+                    text = text.replace(full_tag, block_msg)
+                    self.record_activity("tool", f"{tool_name}_blocked", dec.reason, "warn")
+                    executed_actions.append({"tool": tool_name, "success": False, "reason": dec.reason})
+                    continue
+
+                try:
+                    res = self.tools.execute(tool_name, args)
+                    executed_actions.append({"tool": tool_name, "success": True, "result": res})
+                    self.record_activity("tool", tool_name, f"AI executed '{tool_name}' on Windows device.", "ok", res)
+
+                    replacement = ""
+                    if tool_name in ("execute_command", "run_command", "run_powershell", "shell_command"):
+                        output_str = str(res.get("output", "")).strip()
+                        cmd_str = str(res.get("command", "")).strip()
+                        replacement = f"\n`Command executed: {cmd_str}`\n```\n{output_str[:2500]}\n```" if output_str else "\n`Command executed successfully.`"
+                    elif tool_name == "open_application":
+                        app_name = res.get("app", args.get("app", "app"))
+                        replacement = f"\n`Launched application: {app_name}`"
+                    elif tool_name == "close_application":
+                        app_name = res.get("app", args.get("app", "app"))
+                        replacement = f"\n`Closed application: {app_name}`"
+                    elif tool_name in ("file_write", "create_file"):
+                        path_str = res.get("path", args.get("path", "file"))
+                        replacement = f"\n`File created: {path_str}`"
+                    elif tool_name == "file_read":
+                        content_str = str(res.get("content", ""))[:2000]
+                        replacement = f"\n`File contents ({res.get('path')}):`\n```\n{content_str}\n```"
+                    elif tool_name in ("mouse_click", "mouse_move", "press_key", "hotkey", "type_text"):
+                        replacement = f"\n`Action performed: {tool_name}`"
+                    else:
+                        replacement = f"\n[Tool: {tool_name}]\n```json\n{json.dumps(res, indent=2)[:1500]}\n```"
+
+                    text = text.replace(full_tag, replacement)
+                except Exception as exc:
+                    err_msg = f"\n[Action `{tool_name}` failed: {exc}]"
+                    text = text.replace(full_tag, err_msg)
+                    self.record_activity("tool", f"{tool_name}_error", str(exc), "error")
+                    executed_actions.append({"tool": tool_name, "success": False, "error": str(exc)})
+
+            clean_check = re.sub(r"`[^`]*`|\[[^\]]*\]|```[\s\S]*?```", "", text).strip()
+            if not clean_check:
+                summaries = []
+                for act in executed_actions:
+                    if act["success"]:
+                        t = act["tool"]
+                        if t in ("execute_command", "run_command", "run_powershell"):
+                            summaries.append("I ran the command on your computer.")
+                        elif t == "open_application":
+                            summaries.append("I opened that application for you.")
+                        elif t in ("file_write", "create_file"):
+                            summaries.append("I created the file on your device.")
+                        elif t in ("mouse_click", "press_key", "hotkey", "type_text"):
+                            summaries.append("I completed the computer action.")
+                        else:
+                            summaries.append(f"Completed {t}.")
+                if summaries:
+                    text = " ".join(summaries) + "\n" + text
+        finally:
+            self.set_robot_state("idle")
+
+        return text.strip(), executed_actions
 
     def stream_chat(
         self,
@@ -660,9 +826,25 @@ class RynaCore:
 
             if not final_resp:
                 raise ProviderError("router", "AI stream ended without response.")
-            saved = self.db.add_message(conv_id, "assistant", final_resp.content, provider=final_resp.provider, model=final_resp.model, mode="offline" if final_resp.is_local else "online", metadata={"latency_ms": final_resp.latency_ms, "memories_used": [m["id"] for m in mems]})
-            self.record_activity("ai", "ai_response", f"{final_resp.provider}/{final_resp.model} responded in {final_resp.latency_ms} ms.", "ok")
-            yield {"event": "done", "data": {"conversation_id": conv_id, "assistant_message": saved, "ai_available": True, "provider": final_resp.provider, "model": final_resp.model, "latency_ms": final_resp.latency_ms}}
+
+            # Process device actions emitted by Ollama or Cloud AI models
+            processed_content, executed_actions = self._execute_ai_device_actions(final_resp.content, conv_id, mode)
+            meta: dict[str, Any] = {
+                "latency_ms": final_resp.latency_ms,
+                "memories_used": [m["id"] for m in mems],
+                "device_actions": executed_actions,
+            }
+            if executed_actions:
+                top_act = executed_actions[0]
+                meta["action_card"] = {
+                    "title": f"Device Action: {top_act['tool']}",
+                    "subtitle": "Success" if top_act.get("success") else "Blocked/Failed",
+                    "value": "Executed",
+                }
+
+            saved = self.db.add_message(conv_id, "assistant", processed_content, provider=final_resp.provider, model=final_resp.model, mode="offline" if final_resp.is_local else "online", metadata=meta)
+            self.record_activity("ai", "ai_response", f"{final_resp.provider}/{final_resp.model} responded in {final_resp.latency_ms} ms" + (f" ({len(executed_actions)} action(s) executed)." if executed_actions else "."), "ok")
+            yield {"event": "done", "data": {"conversation_id": conv_id, "assistant_message": saved, "ai_available": True, "provider": final_resp.provider, "model": final_resp.model, "latency_ms": final_resp.latency_ms, "device_actions": executed_actions}}
         except ProviderError as exc:
             self.record_activity("ai", "ai_error", str(exc), "error")
             self.set_robot_state("error")

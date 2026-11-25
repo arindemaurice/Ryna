@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ryna"
-version = "0.1.0"
+version = "1.0.0"
+authors = [{ name = "Arinde Maurice" }]
 description = "RYNA — Unified personal AI assistant, desktop robot companion, voice assistant, and autonomous agent"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,3 +21,5 @@ dev = ["pytest>=8.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+

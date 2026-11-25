@@ -160,17 +160,25 @@ class RynaRobotDesktop:
         # Register RYNA's physical Search-bar app launch choreography on core
         self.core.physical_app_launcher = self._launch_app_physically
 
+        # Avatar appearance customization: accent glow color & chassis hue shift
+        self.accent_color = str(s.get("desktop.accent_color", CYAN))
+        self.chassis_hue_shift = int(s.get("desktop.chassis_hue_shift", 0))
+        self._base_sprites_cache: dict[str, Image.Image] = {}
+        self._tick_job: str | None = None
+        self._active_sprite_ref: ImageTk.PhotoImage | None = None
+
         # --- 1. Root Transparent Robot Window ---
         self.root = tk.Tk()
         self.root.title("RYNA")
         self.root.overrideredirect(True)
         self.root.configure(bg=TRANSPARENT_KEY)
+        self.root.attributes("-topmost", self.always_on_top)
+        if self.alpha < 0.95:
+            self.root.attributes("-alpha", self.alpha)
         try:
             self.root.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
         except Exception:
             pass
-        self.root.attributes("-topmost", self.always_on_top)
-        self.root.attributes("-alpha", self.alpha)
 
         self.sw = self.root.winfo_screenwidth()
         self.sh = self.root.winfo_screenheight()
@@ -207,7 +215,7 @@ class RynaRobotDesktop:
         # --- 2. Clean Floating Dictation & Response Box Directly Above RYNA ---
         self.bubble = tk.Toplevel(self.root)
         self.bubble.overrideredirect(True)
-        self.bubble.configure(bg=CYAN)
+        self.bubble.configure(bg=self._ui_accent_hex())
         self.bubble.attributes("-topmost", True)
         self.bubble.attributes("-alpha", 0.95)
         self._bubble_frame = tk.Frame(self.bubble, bg=BG_BUBBLE, padx=12, pady=8)
@@ -266,11 +274,17 @@ class RynaRobotDesktop:
             w.bind("<Button-3>", lambda _e: self.open_settings_panel())
         self._position_bubble()
 
-        # --- 3. Minimal Tray Icon (Show / Monitor & Settings / Exit) ---
+        # --- 3. Minimal Tray Icon + Mobile Phone Companion Bridge ---
+        self._phone_bridge: Any = None
         self._start_tray()
+        self._start_phone_bridge()
         self.core.warm_up_async()
         # Explicitly show & raise RYNA on desktop even when launched via pythonw.exe / Startup
         self.root.deiconify()
+        try:
+            self.root.wm_attributes("-transparentcolor", TRANSPARENT_KEY)
+        except Exception:
+            pass
         self.root.lift()
         self.bubble.deiconify()
         self.bubble.lift()
@@ -282,7 +296,48 @@ class RynaRobotDesktop:
             return "Resting for the night. Click me anytime you need help."
         return "Click me whenever you want to talk."
 
-    def _load_single_sprite(self, filename: str) -> Image.Image | None:
+    def _ui_accent_hex(self) -> str:
+        """Return a valid Tk #RRGGBB color string even when accent_color is 'original'."""
+        c = str(getattr(self, "accent_color", "") or "").strip()
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", c):
+            return c
+        return CYAN
+
+    def _apply_appearance_transform(self, img: Image.Image) -> Image.Image:
+        if self.accent_color.lower() in ("original", "default", "none", ""):
+            return img
+
+        from PIL import ImageOps
+
+        r, g, b, a = img.split()
+        rgb = Image.merge("RGB", (r, g, b))
+
+        hex_clean = self.accent_color.lstrip("#")
+        if len(hex_clean) == 6:
+            tr, tg, tb = (int(hex_clean[i : i + 2], 16) for i in (0, 2, 4))
+        else:
+            tr, tg, tb = (0, 229, 255)
+
+        hl_r = min(255, int(tr * 0.4 + 255 * 0.6))
+        hl_g = min(255, int(tg * 0.4 + 255 * 0.6))
+        hl_b = min(255, int(tb * 0.4 + 255 * 0.6))
+
+        gray = ImageOps.grayscale(rgb)
+        colored = ImageOps.colorize(
+            gray,
+            black=(10, 10, 15),
+            mid=(tr, tg, tb),
+            white=(hl_r, hl_g, hl_b),
+            midpoint=120,
+        )
+        blended = Image.blend(rgb, colored, alpha=0.88)
+        sr, sg, sb = blended.split()
+        return Image.merge("RGBA", (sr, sg, sb, a))
+
+    def _get_base_sprite(self, filename: str, force_disk_reload: bool = False) -> Image.Image | None:
+        if not force_disk_reload and filename in self._base_sprites_cache:
+            return self._base_sprites_cache[filename].copy()
+
         path = self.assets_dir / filename
         if not path.is_file():
             return None
@@ -290,17 +345,58 @@ class RynaRobotDesktop:
             img = raw.convert("RGBA")
         max_dim = self.robot_size - 10
         img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-        return img
+        self._base_sprites_cache[filename] = img.copy()
+        return img.copy()
 
-    def _load_pose_sprites(self) -> None:
+    def _load_single_sprite(self, filename: str, force_disk_reload: bool = False) -> Image.Image | None:
+        img = self._get_base_sprite(filename, force_disk_reload=force_disk_reload)
+        if img is None:
+            return None
+        return self._apply_appearance_transform(img)
+
+    def reload_avatar(
+        self,
+        hue_shift: int | None = None,
+        accent_color: str | None = None,
+        save: bool = True,
+        force_disk_reload: bool = False,
+    ) -> None:
+        """Reload all avatar sprites with updated hue shift, size, and accent color immediately."""
+        if force_disk_reload:
+            self._base_sprites_cache.clear()
+        if hue_shift is not None:
+            self.chassis_hue_shift = int(hue_shift) % 360
+            if save:
+                self.core.db.set_setting("desktop.chassis_hue_shift", self.chassis_hue_shift)
+        if accent_color is not None:
+            self.accent_color = str(accent_color).strip()
+            if save:
+                self.core.db.set_setting("desktop.accent_color", self.accent_color)
+        self._load_pose_sprites(force_disk_reload=force_disk_reload)
+        try:
+            self.bubble.configure(bg=self._ui_accent_hex())
+        except Exception:
+            pass
+        self._redraw_now()
+
+    def _redraw_now(self) -> None:
+        """Immediately repaint the canvas with the updated sprite and glow."""
+        try:
+            self._draw_robot_scene()
+            self.canvas.update_idletasks()
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+    def _load_pose_sprites(self, force_disk_reload: bool = False) -> None:
         """Load RYNA's interchanging walk cycle + stand, think (touching head), sit, and sleep poses."""
         self._walk_right.clear()
         self._walk_left.clear()
 
         # 4-phase genuine interchanging stride cycle: [walk_a, walk_mid, walk_b, walk_mid]
-        walk_a = self._load_single_sprite("ryna_walk_a.png") or self._load_single_sprite("ryna_robot.png")
-        walk_mid = self._load_single_sprite("ryna_walk_mid.png") or walk_a
-        walk_b = self._load_single_sprite("ryna_walk_b.png") or walk_a
+        walk_a = self._load_single_sprite("ryna_walk_a.png", force_disk_reload=force_disk_reload) or self._load_single_sprite("ryna_robot.png", force_disk_reload=force_disk_reload)
+        walk_mid = self._load_single_sprite("ryna_walk_mid.png", force_disk_reload=force_disk_reload) or walk_a
+        walk_b = self._load_single_sprite("ryna_walk_b.png", force_disk_reload=force_disk_reload) or walk_a
 
         if walk_a is not None:
             cycle_imgs = [
@@ -316,10 +412,10 @@ class RynaRobotDesktop:
                 self._walk_right.append(ImageTk.PhotoImage(r_img))
                 self._walk_left.append(ImageTk.PhotoImage(l_img))
 
-        stand = self._load_single_sprite("ryna_stand.png") or walk_a
-        think = self._load_single_sprite("ryna_think.png") or stand
-        sit = self._load_single_sprite("ryna_sit.png") or stand
-        sleep = self._load_single_sprite("ryna_sleep.png") or sit
+        stand = self._load_single_sprite("ryna_stand.png", force_disk_reload=force_disk_reload) or walk_a
+        think = self._load_single_sprite("ryna_think.png", force_disk_reload=force_disk_reload) or stand
+        sit = self._load_single_sprite("ryna_sit.png", force_disk_reload=force_disk_reload) or stand
+        sleep = self._load_single_sprite("ryna_sleep.png", force_disk_reload=force_disk_reload) or sit
 
         self._pose_stand = ImageTk.PhotoImage(stand) if stand is not None else None
         self._pose_think = ImageTk.PhotoImage(think) if think is not None else None
@@ -625,6 +721,34 @@ class RynaRobotDesktop:
             self._resize(max(125, self.robot_size - 35))
             return "Okay, I've made myself smaller."
 
+        # Avatar appearance, color & reload commands
+        COLOR_COMMANDS = {
+            "blue": ("#2979ff", 220),
+            "cyan": ("#00e5ff", 180),
+            "green": ("#00e676", 140),
+            "emerald": ("#00e676", 140),
+            "gold": ("#ffab00", 40),
+            "yellow": ("#ffab00", 40),
+            "amber": ("#ffab00", 40),
+            "red": ("#ff1744", 0),
+            "crimson": ("#ff1744", 0),
+            "purple": ("#d500f9", 280),
+            "violet": ("#d500f9", 280),
+            "pink": ("#ff4081", 330),
+            "magenta": ("#ff4081", 330),
+            "original": ("original", 0),
+            "default": ("#00e5ff", 180),
+        }
+        if any(w in low for w in ("change color", "change your color", "turn color", "switch color", "set color", "change theme", "set theme")):
+            for col_name, (hex_code, hue_val) in COLOR_COMMANDS.items():
+                if col_name in low:
+                    self.reload_avatar(hue_shift=hue_val, accent_color=hex_code)
+                    return f"Changed my appearance to {col_name}."
+
+        if any(w in low for w in ("reload avatar", "refresh avatar", "update avatar", "reload skin", "refresh skin", "reload poses")):
+            self.reload_avatar()
+            return "Reloaded my avatar sprites and appearance."
+
         if any(p in low for p in ("use cloud", "enable cloud", "turn on cloud")):
             self.core.db.set_setting("ai.allow_cloud", True)
             return "Cloud AI is now enabled when you're online."
@@ -673,8 +797,10 @@ class RynaRobotDesktop:
         self.win_h = px + 32
         self.root.geometry(f"{self.win_w}x{self.win_h}+{int(self.pos_x)}+{int(self.pos_y)}")
         self.canvas.config(width=self.win_w, height=self.win_h)
-        self._load_pose_sprites()
+        self._base_sprites_cache.clear()
+        self._load_pose_sprites(force_disk_reload=True)
         self._position_bubble()
+        self._redraw_now()
         self.core.db.set_setting("desktop.robot_size", px)
 
     def _handle_dictated_speech(self, text: str) -> None:
@@ -699,6 +825,12 @@ class RynaRobotDesktop:
         # 2. Stream real AI / tool response and speak sentence-by-sentence calmly
         self.is_generating = True
 
+        def _clean_spoken(raw_txt: str) -> str:
+            cleaned = re.sub(r"\[ACTION:[\s\S]*?\]", " ", raw_txt, flags=re.IGNORECASE)
+            cleaned = re.sub(r"```[\s\S]*?```", " ", cleaned)
+            cleaned = re.sub(r"`([^`]*)`", r"\1", cleaned)
+            return re.sub(r"\s+", " ", cleaned).strip()
+
         def _worker() -> None:
             sentence_buf = ""
             full_acc = ""
@@ -712,6 +844,8 @@ class RynaRobotDesktop:
                         if not delta:
                             continue
                         full_acc += delta
+                        if "[ACTION:" in full_acc or "```" in full_acc:
+                            continue
                         sentence_buf += delta
                         self.root.after(
                             0,
@@ -720,8 +854,9 @@ class RynaRobotDesktop:
                         parts = SENTENCE_SPLIT_RE.split(sentence_buf)
                         if len(parts) > 1:
                             for sent in parts[:-1]:
-                                if sent.strip():
-                                    self.core.voice.enqueue_sentence(sent.strip())
+                                sp = _clean_spoken(sent)
+                                if sp:
+                                    self.core.voice.enqueue_sentence(sp)
                                     spoke_any = True
                             sentence_buf = parts[-1]
                     elif ev["event"] in ("done", "error"):
@@ -734,7 +869,7 @@ class RynaRobotDesktop:
                                 lambda c=content, t=text: self._show_bubble(c, dictation_text=t, show_mic_bar=False, duration=12.0),
                             )
                         if ai_ok and not self.core.voice.is_interrupted():
-                            tail = sentence_buf.strip() if spoke_any else content
+                            tail = _clean_spoken(sentence_buf if spoke_any else content)
                             if tail:
                                 self.core.voice.enqueue_sentence(tail, on_all_done=_after_spoken)
                             elif spoke_any:
@@ -770,6 +905,16 @@ class RynaRobotDesktop:
                 pass
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _start_phone_bridge(self) -> None:
+        try:
+            from app.desktop.phone_bridge import RynaPhoneBridge
+
+            port = int(self.core.config.port or 8765)
+            self._phone_bridge = RynaPhoneBridge(self, port=port)
+            self._phone_bridge.start()
+        except Exception as exc:
+            self.core.logger.warning("Phone companion bridge did not start: %s", exc)
 
     def hide_to_tray(self) -> None:
         self.root.withdraw()
@@ -862,7 +1007,33 @@ class RynaRobotDesktop:
         self.phase += 0.12 if busy else (0.032 if is_sleeping else 0.055)
         self.step_phase = (self.step_phase + (0.48 if is_dashing else 0.24)) if is_walking else 0.0
 
-        accent = STATE_COLORS.get("working" if is_dashing else ("thinking" if is_thinking else ("sleeping" if is_sleeping else self.state)), CYAN)
+        try:
+            self._draw_robot_scene()
+        except Exception:
+            pass
+        if self._tick_job is not None:
+            try:
+                self.root.after_cancel(self._tick_job)
+            except Exception:
+                pass
+        if self.running:
+            self._tick_job = self.root.after(33, self._tick)
+
+    def _draw_robot_scene(self) -> None:
+        state = self.core.voice.get_state() if hasattr(self, "core") else self.state
+        is_thinking = (state == "thinking") or (self.is_generating and state != "speaking")
+        is_speaking = (state == "speaking") or self.is_greeting
+        busy = self.is_listening or is_thinking or is_speaking or state == "working" or self._dragging_now
+        is_dashing = self._nav_target is not None and not self._dragging_now
+        is_walking = is_dashing or ((not busy) and self.walk_enabled and (self.current_action == "walk"))
+        is_sleeping = (not busy) and (not is_dashing) and (self.current_action == "sleep")
+        is_sitting = (not busy) and (not is_dashing) and (self.current_action == "sit")
+
+        ui_accent = self._ui_accent_hex()
+        accent = ui_accent if state == "idle" and not (is_dashing or is_thinking or is_sleeping) else STATE_COLORS.get(
+            "working" if is_dashing else ("thinking" if is_thinking else ("sleeping" if is_sleeping else state)),
+            ui_accent,
+        )
 
         c = self.canvas
         c.delete("all")
@@ -911,15 +1082,16 @@ class RynaRobotDesktop:
                 y_offset = -abs(math.sin(self.step_phase * 1.35 * math.pi / 2.0)) * 5.5
         elif is_sleeping:
             sprite = self._pose_sleep
-            y_offset = math.sin(self.phase) * 1.6 + 6.0
+            y_offset = math.sin(self.phase * 0.8) * 1.6 + 6.0
         elif is_sitting:
             sprite = self._pose_sit
-            y_offset = math.sin(self.phase) * 1.4 + 6.0
+            y_offset = math.sin(self.phase * 0.8) * 1.4 + 6.0
         else:
             sprite = self._pose_stand
             y_offset = math.sin(self.phase) * 2.0
 
         if sprite is not None:
+            self._active_sprite_ref = sprite
             c.create_image(cx, self.win_h * 0.47 + y_offset, image=sprite)
 
         # Floating peaceful "z Z" animation when sleeping
@@ -959,10 +1131,20 @@ class RynaRobotDesktop:
             badge = f"STANDING · {clock_str}"
         self._state_lbl.config(text=badge, fg=accent)
 
-        self.root.after(33, self._tick)
-
     def quit_app(self) -> None:
         self.running = False
+        if self._tick_job is not None:
+            try:
+                self.root.after_cancel(self._tick_job)
+            except Exception:
+                pass
+            self._tick_job = None
+        if getattr(self, "_phone_bridge", None) is not None:
+            try:
+                self._phone_bridge.stop()
+            except Exception:
+                pass
+            self._phone_bridge = None
         self.core.physical_app_launcher = None
         self.core.voice.interrupt("Exiting RYNA")
         if self._settings_panel is not None:
